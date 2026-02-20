@@ -1,13 +1,13 @@
 import 'dotenv/config';
 import express from 'express';
-import line from '@line/bot-sdk';
+import { middleware, messagingApi } from '@line/bot-sdk';
 
 const config = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
-const client = new line.messagingApi.MessagingApiClient({
+const client = new messagingApi.MessagingApiClient({
   channelAccessToken: config.channelAccessToken,
 });
 
@@ -15,7 +15,7 @@ const app = express();
 
 app.get('/', (_, res) => res.send('OK'));
 
-app.post('/webhook', line.middleware(config), async (req, res) => {
+app.post('/webhook', middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
     await Promise.all(events.map(handleEvent));
