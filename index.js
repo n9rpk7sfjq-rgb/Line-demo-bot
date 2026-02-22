@@ -1,6 +1,4 @@
 // index.js  (FULL FILE - replace everything with this)
-
-import fetch from 'node-fetch';
 import 'dotenv/config';
 import express from 'express';
 import { middleware, messagingApi } from '@line/bot-sdk';
