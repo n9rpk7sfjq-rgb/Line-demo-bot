@@ -1,3 +1,6 @@
+// index.js  (FULL FILE - replace everything with this)
+
+import fetch from 'node-fetch';
 import 'dotenv/config';
 import express from 'express';
 import { middleware, messagingApi } from '@line/bot-sdk';
@@ -12,8 +15,11 @@ const client = new messagingApi.MessagingApiClient({
 });
 
 const app = express();
+
+// Health check
 app.get('/', (_, res) => res.send('OK'));
 
+// LINE webhook endpoint
 app.post('/webhook', middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -40,10 +46,13 @@ const STEPS = {
   DONE: 'done',
 };
 
+// Demo slots
 const DEMO_SLOTS = ['Today 6:30pm', 'Tomorrow 1:00pm', 'Tomorrow 7:15pm'];
 
+// --------------------
+// Helpers
+// --------------------
 function getUserId(event) {
-  // userId exists in 1:1 chats; group chats require different handling
   return event.source?.userId || null;
 }
 
@@ -63,6 +72,10 @@ function touch(session) {
   session.updatedAt = Date.now();
 }
 
+function normalize(s) {
+  return (s || '').trim();
+}
+
 function makeText(text) {
   return { type: 'text', text };
 }
@@ -70,24 +83,19 @@ function makeText(text) {
 function makeQuickReply(items) {
   // items: [{ label, text }]
   return {
-    items: items.map(i => ({
+    items: items.map((i) => ({
       type: 'action',
       action: { type: 'message', label: i.label, text: i.text },
     })),
   };
 }
 
-function normalize(s) {
-  return (s || '').trim();
-}
-
 function isReset(text) {
   return /^reset$|^start over$|^restart$|เริ่มใหม่|รีเซ็ต/i.test(text);
 }
 
-// Mild intent detection for the FIRST message only
 function detectIntent(text) {
-  const t = text.toLowerCase();
+  const t = (text || '').toLowerCase();
   if (/botox|โบท็อก/i.test(t)) return 'Botox';
   if (/filler|ฟิลเลอร์/i.test(t)) return 'Filler';
   if (/facial|ทรีทเมนต์|ทรีตเมนต์|skin|ผิว/i.test(t)) return 'Skin/Facial';
@@ -96,96 +104,111 @@ function detectIntent(text) {
 }
 
 function validatePhone(text) {
-  // very rough; you can improve later. Accept Thai or intl-ish digits.
-  const digits = text.replace(/[^\d+]/g, '');
+  const digits = (text || '').replace(/[^\d+]/g, '');
   if (digits.length < 8) return null;
   return digits;
 }
 
+// --------------------
+// SEND TO GOOGLE SHEET (Apps Script Web App)
+// --------------------
+async function sendLeadToSheet(lead) {
+  const url = process.env.LEADS_API_URL; // MUST be your Apps Script /exec URL
+  if (!url) {
+    console.warn('LEADS_API_URL missing - not sending lead to sheet');
+    return;
+  }
+
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lead),
+    });
+
+    const text = await r.text();
+    if (!r.ok) {
+      console.error('Apps Script error', r.status, text);
+    } else {
+      console.log('Lead saved to sheet:', text);
+    }
+  } catch (e) {
+    console.error('Failed to send lead to sheet', e);
+  }
+}
+
+// --------------------
+// Main event handler
+// --------------------
 async function handleEvent(event) {
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const userId = getUserId(event);
-  if (!userId) return; // ignore for now
+  if (!userId) return;
 
   const userText = normalize(event.message.text);
   if (!userText) return;
 
   if (isReset(userText)) {
     resetSession(userId);
-    return reply(event, makeText('Reset ✅ Let’s start. What are you interested in?'), intentQuickReply());
+    return reply(
+      event,
+      makeText('Reset ✅ Let’s start. What are you interested in?'),
+      intentQuickReply()
+    );
   }
 
   const session = getSession(userId);
   touch(session);
 
-  // Global "help" fallback
   if (/^help$|ช่วยด้วย|ช่วยหน่อย/i.test(userText)) {
-    return reply(event, makeText('I can help you book a consultation. Tap an option below.'), intentQuickReply());
+    return reply(
+      event,
+      makeText('I can help you book a consultation. Tap an option below.'),
+      intentQuickReply()
+    );
   }
 
   switch (session.step) {
     case STEPS.INTENT: {
-      const detected = detectIntent(userText) || userText;
-      // If user typed something random, steer them into buttons.
+      const detected = detectIntent(userText);
       const allowed = ['Botox', 'Filler', 'Skin/Facial', 'Anti-aging/Lifting'];
-      const picked = allowed.find(a => a.toLowerCase() === detected.toLowerCase()) || detectIntent(userText);
+
+      const picked =
+        allowed.find((a) => a.toLowerCase() === userText.toLowerCase()) || detected;
 
       if (!picked) {
-        return reply(
-          event,
-          makeText('What are you interested in?'),
-          intentQuickReply()
-        );
+        return reply(event, makeText('What are you interested in?'), intentQuickReply());
       }
 
       session.data.intent = picked;
       session.step = STEPS.AREA;
 
-      return reply(
-        event,
-        makeText(`Got it: ${picked}. Which area?`),
-        areaQuickReply()
-      );
+      return reply(event, makeText(`Got it: ${picked}. Which area?`), areaQuickReply());
     }
 
     case STEPS.AREA: {
       session.data.area = userText;
       session.step = STEPS.BUDGET;
-
-      return reply(
-        event,
-        makeText('Budget range?'),
-        budgetQuickReply()
-      );
+      return reply(event, makeText('Budget range?'), budgetQuickReply());
     }
 
     case STEPS.BUDGET: {
       session.data.budget = userText;
       session.step = STEPS.TIMING;
-
-      return reply(
-        event,
-        makeText('When do you want to come?'),
-        timingQuickReply()
-      );
+      return reply(event, makeText('When do you want to come?'), timingQuickReply());
     }
 
     case STEPS.TIMING: {
       session.data.timing = userText;
       session.step = STEPS.SLOT;
-
-      return reply(
-        event,
-        makeText('Pick a time slot:'),
-        slotQuickReply()
-      );
+      return reply(event, makeText('Pick a time slot:'), slotQuickReply());
     }
 
     case STEPS.SLOT: {
-      // If user tapped, it will match exactly. If typed, accept if contains a slot label.
-      const slot = DEMO_SLOTS.find(s => s.toLowerCase() === userText.toLowerCase())
-        || DEMO_SLOTS.find(s => userText.toLowerCase().includes(s.toLowerCase()));
+      const slot =
+        DEMO_SLOTS.find((s) => s.toLowerCase() === userText.toLowerCase()) ||
+        DEMO_SLOTS.find((s) => userText.toLowerCase().includes(s.toLowerCase()));
 
       if (!slot) {
         return reply(event, makeText('Please pick one of the slots below:'), slotQuickReply());
@@ -198,17 +221,16 @@ async function handleEvent(event) {
         event,
         makeText(
           `Great. Please send:\n` +
-          `1) Your name\n` +
-          `2) Your phone number\n\n` +
-          `Example: "N, 0812345678"\n\n` +
-          `Final suitability is confirmed by the clinician.`
+            `1) Your name\n` +
+            `2) Your phone number\n\n` +
+            `Example: "N, 0812345678"\n\n` +
+            `Final suitability is confirmed by the clinician.`
         )
       );
     }
 
     case STEPS.CONTACT: {
-      // Parse "name, phone"
-      const parts = userText.split(',').map(p => p.trim()).filter(Boolean);
+      const parts = userText.split(',').map((p) => p.trim()).filter(Boolean);
       if (parts.length < 2) {
         return reply(event, makeText('Please send "Name, Phone" (example: "N, 0812345678").'));
       }
@@ -223,8 +245,9 @@ async function handleEvent(event) {
       session.data.phone = phone;
       session.step = STEPS.DONE;
 
-      // "Handoff" placeholder: log the lead. Next: push to staff LINE group or webhook to CRM.
-      console.log('NEW LEAD', {
+      const lead = {
+        ts: new Date().toISOString(),
+        userId,
         intent: session.data.intent,
         area: session.data.area,
         budget: session.data.budget,
@@ -232,26 +255,27 @@ async function handleEvent(event) {
         slot: session.data.slot,
         name: session.data.name,
         phone: session.data.phone,
-        userId,
-      });
+      };
+
+      console.log('NEW LEAD', lead);
+      await sendLeadToSheet(lead);
 
       return reply(
         event,
         makeText(
           `Booked (demo) ✅\n\n` +
-          `Summary:\n` +
-          `• Service: ${session.data.intent}\n` +
-          `• Area: ${session.data.area}\n` +
-          `• Budget: ${session.data.budget}\n` +
-          `• Time: ${session.data.slot}\n\n` +
-          `We’ll confirm shortly. If you need to change time, reply here.`
+            `Summary:\n` +
+            `• Service: ${lead.intent}\n` +
+            `• Area: ${lead.area}\n` +
+            `• Budget: ${lead.budget}\n` +
+            `• Time: ${lead.slot}\n\n` +
+            `We’ll confirm shortly. If you need to change time, reply here.`
         ),
         makeQuickReply([{ label: 'Start over', text: 'reset' }])
       );
     }
 
     case STEPS.DONE: {
-      // After done, keep it simple: offer change or restart.
       return reply(
         event,
         makeText('You’re already booked (demo). Want to change time or start over?'),
@@ -309,9 +333,11 @@ function timingQuickReply() {
 }
 
 function slotQuickReply() {
-  return makeQuickReply(DEMO_SLOTS.map(s => ({ label: s, text: s })));
+  return makeQuickReply(DEMO_SLOTS.map((s) => ({ label: s, text: s })));
 }
 
+// --------------------
+// Reply wrapper
 // --------------------
 async function reply(event, message, quickReply = null) {
   const m = quickReply ? { ...message, quickReply } : message;
