@@ -92,6 +92,11 @@ function isReset(text) {
   return /^reset$|^start over$|^restart$|เริ่มใหม่|รีเซ็ต/i.test(text);
 }
 
+function isGreeting(text) {
+  // Works at ANY step (prevents “hi does nothing”)
+  return /^(hi|hello|hey|yo|sup|สวัสดี|หวัดดี|ทัก|ดีครับ|ดีค่ะ)\b/i.test(text || '');
+}
+
 function detectIntent(text) {
   const t = (text || '').toLowerCase();
   if (/botox|โบท็อก/i.test(t)) return 'Botox';
@@ -105,6 +110,55 @@ function validatePhone(text) {
   const digits = (text || '').replace(/[^\d+]/g, '');
   if (digits.length < 8) return null;
   return digits;
+}
+
+function currentQuestionForStep(step, session) {
+  switch (step) {
+    case STEPS.INTENT:
+      return 'What are you interested in?';
+    case STEPS.AREA:
+      return `Got it: ${session?.data?.intent || ''}. Which area?`.trim();
+    case STEPS.BUDGET:
+      return 'Budget range?';
+    case STEPS.TIMING:
+      return 'When do you want to come?';
+    case STEPS.SLOT:
+      return 'Pick a time slot:';
+    case STEPS.CONTACT:
+      return (
+        `Great. Please send:\n` +
+        `1) Your name\n` +
+        `2) Your phone number\n\n` +
+        `Example: "N, 0812345678"\n\n` +
+        `Final suitability is confirmed by the clinician.`
+      );
+    case STEPS.DONE:
+      return "You’re already booked (demo). Want to change time or start over?";
+    default:
+      return 'What are you interested in?';
+  }
+}
+
+function getQuickReplyForStep(step) {
+  switch (step) {
+    case STEPS.INTENT:
+      return intentQuickReply();
+    case STEPS.AREA:
+      return areaQuickReply();
+    case STEPS.BUDGET:
+      return budgetQuickReply();
+    case STEPS.TIMING:
+      return timingQuickReply();
+    case STEPS.SLOT:
+      return slotQuickReply();
+    case STEPS.DONE:
+      return makeQuickReply([
+        { label: 'Change time', text: 'Change time' },
+        { label: 'Start over', text: 'reset' },
+      ]);
+    default:
+      return intentQuickReply();
+  }
 }
 
 // --------------------
@@ -139,6 +193,7 @@ async function sendLeadToSheet(lead) {
 // Main event handler
 // --------------------
 async function handleEvent(event) {
+  // Only respond to text messages
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const userId = getUserId(event);
@@ -147,6 +202,7 @@ async function handleEvent(event) {
   const userText = normalize(event.message.text);
   if (!userText) return;
 
+  // Reset is the only thing that should hard-reset
   if (isReset(userText)) {
     resetSession(userId);
     return reply(
@@ -156,14 +212,51 @@ async function handleEvent(event) {
     );
   }
 
+  // Session must exist for greeting handler + flow
   const session = getSession(userId);
   touch(session);
 
+  // Greetings: do NOT reset. Just prompt the right next question.
+  if (isGreeting(userText)) {
+    // If already booked, show done options
+    if (session.step === STEPS.DONE) {
+      return reply(event, makeText(currentQuestionForStep(STEPS.DONE, session)), getQuickReplyForStep(STEPS.DONE));
+    }
+
+    // Mid-flow: continue where they left off
+    if (session.step !== STEPS.INTENT) {
+      return reply(
+        event,
+        makeText(`Continue: ${currentQuestionForStep(session.step, session)}`),
+        getQuickReplyForStep(session.step)
+      );
+    }
+
+    // Start flow
+    return reply(event, makeText('What are you interested in?'), intentQuickReply());
+  }
+
+  // Help
   if (/^help$|ช่วยด้วย|ช่วยหน่อย/i.test(userText)) {
     return reply(
       event,
       makeText('I can help you book a consultation. Tap an option below.'),
       intentQuickReply()
+    );
+  }
+
+  // DONE: allow “Change time”
+  if (session.step === STEPS.DONE) {
+    if (/^change time$/i.test(userText)) {
+      session.step = STEPS.SLOT;
+      // keep prior answers; just redo slot + contact if you want later
+      return reply(event, makeText('Pick a time slot:'), slotQuickReply());
+    }
+    // Otherwise keep it simple
+    return reply(
+      event,
+      makeText("You’re already booked (demo). Want to change time or start over?"),
+      getQuickReplyForStep(STEPS.DONE)
     );
   }
 
@@ -215,16 +308,7 @@ async function handleEvent(event) {
       session.data.slot = slot;
       session.step = STEPS.CONTACT;
 
-      return reply(
-        event,
-        makeText(
-          `Great. Please send:\n` +
-            `1) Your name\n` +
-            `2) Your phone number\n\n` +
-            `Example: "N, 0812345678"\n\n` +
-            `Final suitability is confirmed by the clinician.`
-        )
-      );
+      return reply(event, makeText(currentQuestionForStep(STEPS.CONTACT, session)));
     }
 
     case STEPS.CONTACT: {
@@ -269,14 +353,6 @@ async function handleEvent(event) {
             `• Time: ${lead.slot}\n\n` +
             `We’ll confirm shortly. If you need to change time, reply here.`
         ),
-        makeQuickReply([{ label: 'Start over', text: 'reset' }])
-      );
-    }
-
-    case STEPS.DONE: {
-      return reply(
-        event,
-        makeText('You’re already booked (demo). Want to change time or start over?'),
         makeQuickReply([
           { label: 'Change time', text: 'Change time' },
           { label: 'Start over', text: 'reset' },
