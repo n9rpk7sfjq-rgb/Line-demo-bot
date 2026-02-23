@@ -32,7 +32,7 @@ app.post('/webhook', middleware(config), async (req, res) => {
 // --------------------
 // Demo "database" (in-memory). Production: Redis/DB.
 // --------------------
-const sessions = new Map(); // key: userId -> { step, data, updatedAt }
+const sessions = new Map(); // userId -> { step, data, updatedAt }
 
 const STEPS = {
   INTENT: 'intent',
@@ -43,9 +43,6 @@ const STEPS = {
   CONTACT: 'contact',
   DONE: 'done',
 };
-
-// Demo slots
-const DEMO_SLOTS = ['Today 6:30pm', 'Tomorrow 1:00pm', 'Tomorrow 7:15pm'];
 
 // --------------------
 // Helpers
@@ -79,7 +76,6 @@ function makeText(text) {
 }
 
 function makeQuickReply(items) {
-  // items: [{ label, text }]
   return {
     items: items.map((i) => ({
       type: 'action',
@@ -93,7 +89,6 @@ function isReset(text) {
 }
 
 function isGreeting(text) {
-  // Works at ANY step (prevents “hi does nothing”)
   return /^(hi|hello|hey|yo|sup|สวัสดี|หวัดดี|ทัก|ดีครับ|ดีค่ะ)\b/i.test(text || '');
 }
 
@@ -112,60 +107,118 @@ function validatePhone(text) {
   return digits;
 }
 
-function currentQuestionForStep(step, session) {
-  switch (step) {
-    case STEPS.INTENT:
-      return 'What are you interested in?';
-    case STEPS.AREA:
-      return `Got it: ${session?.data?.intent || ''}. Which area?`.trim();
-    case STEPS.BUDGET:
-      return 'Budget range?';
-    case STEPS.TIMING:
-      return 'When do you want to come?';
-    case STEPS.SLOT:
-      return 'Pick a time slot:';
-    case STEPS.CONTACT:
-      return (
-        `Great. Please send:\n` +
-        `1) Your name\n` +
-        `2) Your phone number\n\n` +
-        `Example: "N, 0812345678"\n\n` +
-        `Final suitability is confirmed by the clinician.`
-      );
-    case STEPS.DONE:
-      return "You’re already booked (demo). Want to change time or start over?";
-    default:
-      return 'What are you interested in?';
-  }
+// --------------------
+// Slot generation (FIXES your “next week but today/tomorrow slots” issue)
+// --------------------
+const BANGKOK_TZ = 'Asia/Bangkok';
+
+// Returns "Mon", "Tue", etc (Bangkok time)
+function weekdayShort(d) {
+  return new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: BANGKOK_TZ }).format(d);
 }
 
-function getQuickReplyForStep(step) {
-  switch (step) {
-    case STEPS.INTENT:
-      return intentQuickReply();
-    case STEPS.AREA:
-      return areaQuickReply();
-    case STEPS.BUDGET:
-      return budgetQuickReply();
-    case STEPS.TIMING:
-      return timingQuickReply();
-    case STEPS.SLOT:
-      return slotQuickReply();
-    case STEPS.DONE:
-      return makeQuickReply([
-        { label: 'Change time', text: 'Change time' },
-        { label: 'Start over', text: 'reset' },
-      ]);
-    default:
-      return intentQuickReply();
+// Returns "6:30pm" (Bangkok time)
+function timeShort(d) {
+  return new Intl.DateTimeFormat('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: BANGKOK_TZ,
+  })
+    .format(d)
+    .replace(' ', '')
+    .toLowerCase();
+}
+
+// Create a Date at Bangkok local date/time (approx; good enough for demo slots)
+function bangkokDate(y, m, day, hour, min) {
+  // We store as UTC date corresponding to Bangkok wall clock time.
+  // Bangkok is UTC+7 (no DST) so subtract 7 hours to get UTC.
+  const utc = Date.UTC(y, m, day, hour - 7, min, 0);
+  return new Date(utc);
+}
+
+function getBangkokYMD(d = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: BANGKOK_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type)?.value;
+  return { y: Number(get('year')), m: Number(get('month')) - 1, day: Number(get('day')) };
+}
+
+function addDaysBangkok(baseYMD, addDays) {
+  // build UTC date from Bangkok midnight, then add days
+  const base = bangkokDate(baseYMD.y, baseYMD.m, baseYMD.day, 0, 0);
+  const next = new Date(base.getTime() + addDays * 24 * 60 * 60 * 1000);
+  return getBangkokYMD(next);
+}
+
+function nextMondayFromTodayBangkok() {
+  const now = new Date();
+  const weekday = new Intl.DateTimeFormat('en-US', { weekday: 'short', timeZone: BANGKOK_TZ }).format(now);
+  const map = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const todayIdx = map[weekday] ?? 0;
+  const daysUntilMon = (8 - todayIdx) % 7 || 7; // next Monday (not today)
+  const todayYMD = getBangkokYMD(now);
+  return addDaysBangkok(todayYMD, daysUntilMon);
+}
+
+function buildSlots(timingText) {
+  const t = (timingText || '').toLowerCase();
+  const todayYMD = getBangkokYMD(new Date());
+
+  // slot times we offer
+  const slotTimes = [
+    { h: 13, m: 0 },  // 1:00pm
+    { h: 18, m: 30 }, // 6:30pm
+    { h: 19, m: 15 }, // 7:15pm
+  ];
+
+  // choose which dates to offer based on timing
+  let dates = [];
+
+  if (t.includes('today')) {
+    dates = [todayYMD];
+  } else if (t.includes('next week')) {
+    const mon = nextMondayFromTodayBangkok();
+    const tue = addDaysBangkok(mon, 1);
+    const wed = addDaysBangkok(mon, 2);
+    dates = [mon, tue, wed];
+  } else {
+    // "This week" (or anything else): next 3 days
+    const d1 = addDaysBangkok(todayYMD, 1);
+    const d2 = addDaysBangkok(todayYMD, 2);
+    const d3 = addDaysBangkok(todayYMD, 3);
+    dates = [d1, d2, d3];
   }
+
+  // Build slot labels the user will click
+  const slots = [];
+  for (const date of dates) {
+    for (const st of slotTimes) {
+      const d = bangkokDate(date.y, date.m, date.day, st.h, st.m);
+      const label = `${weekdayShort(d)} ${timeShort(d)}`; // e.g. "Mon 6:30pm"
+      slots.push(label);
+    }
+  }
+
+  // Return first 3 slots (clean UX); adjust if you want more
+  return slots.slice(0, 3);
+}
+
+function slotQuickReplyForTiming(timing) {
+  const slots = buildSlots(timing);
+  return makeQuickReply(slots.map((s) => ({ label: s, text: s })));
 }
 
 // --------------------
 // SEND TO GOOGLE SHEET (Apps Script Web App)
 // --------------------
 async function sendLeadToSheet(lead) {
-  const url = process.env.LEADS_API_URL; // MUST be your Apps Script /exec URL
+  const url = process.env.LEADS_API_URL; // Apps Script /exec URL
   if (!url) {
     console.warn('LEADS_API_URL missing - not sending lead to sheet');
     return;
@@ -179,11 +232,8 @@ async function sendLeadToSheet(lead) {
     });
 
     const text = await r.text();
-    if (!r.ok) {
-      console.error('Apps Script error', r.status, text);
-    } else {
-      console.log('Lead saved to sheet:', text);
-    }
+    if (!r.ok) console.error('Apps Script error', r.status, text);
+    else console.log('Lead saved to sheet:', text);
   } catch (e) {
     console.error('Failed to send lead to sheet', e);
   }
@@ -193,7 +243,6 @@ async function sendLeadToSheet(lead) {
 // Main event handler
 // --------------------
 async function handleEvent(event) {
-  // Only respond to text messages
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const userId = getUserId(event);
@@ -202,61 +251,62 @@ async function handleEvent(event) {
   const userText = normalize(event.message.text);
   if (!userText) return;
 
-  // Reset is the only thing that should hard-reset
   if (isReset(userText)) {
     resetSession(userId);
-    return reply(
-      event,
-      makeText('Reset ✅ Let’s start. What are you interested in?'),
-      intentQuickReply()
-    );
+    return reply(event, makeText('Reset ✅ Let’s start. What are you interested in?'), intentQuickReply());
   }
 
-  // Session must exist for greeting handler + flow
   const session = getSession(userId);
   touch(session);
 
-  // Greetings: do NOT reset. Just prompt the right next question.
+  // Greeting: do NOT reset, just prompt appropriately
   if (isGreeting(userText)) {
-    // If already booked, show done options
     if (session.step === STEPS.DONE) {
-      return reply(event, makeText(currentQuestionForStep(STEPS.DONE, session)), getQuickReplyForStep(STEPS.DONE));
-    }
-
-    // Mid-flow: continue where they left off
-    if (session.step !== STEPS.INTENT) {
       return reply(
         event,
-        makeText(`Continue: ${currentQuestionForStep(session.step, session)}`),
-        getQuickReplyForStep(session.step)
+        makeText("You’re already booked (demo). Want to change time or start over?"),
+        makeQuickReply([
+          { label: 'Change time', text: 'Change time' },
+          { label: 'Start over', text: 'reset' },
+        ])
       );
     }
 
-    // Start flow
+    if (session.step !== STEPS.INTENT) {
+      // Continue where they left off (no loop)
+      const msg =
+        session.step === STEPS.SLOT
+          ? 'Continue: Pick a time slot:'
+          : `Continue: ${stepPrompt(session)}`;
+
+      const qr =
+        session.step === STEPS.SLOT
+          ? slotQuickReplyForTiming(session.data.timing)
+          : quickReplyForStep(session);
+
+      return reply(event, makeText(msg), qr);
+    }
+
     return reply(event, makeText('What are you interested in?'), intentQuickReply());
   }
 
-  // Help
   if (/^help$|ช่วยด้วย|ช่วยหน่อย/i.test(userText)) {
-    return reply(
-      event,
-      makeText('I can help you book a consultation. Tap an option below.'),
-      intentQuickReply()
-    );
+    return reply(event, makeText('I can help you book a consultation. Tap an option below.'), intentQuickReply());
   }
 
   // DONE: allow “Change time”
   if (session.step === STEPS.DONE) {
     if (/^change time$/i.test(userText)) {
       session.step = STEPS.SLOT;
-      // keep prior answers; just redo slot + contact if you want later
-      return reply(event, makeText('Pick a time slot:'), slotQuickReply());
+      return reply(event, makeText('Pick a time slot:'), slotQuickReplyForTiming(session.data.timing));
     }
-    // Otherwise keep it simple
     return reply(
       event,
       makeText("You’re already booked (demo). Want to change time or start over?"),
-      getQuickReplyForStep(STEPS.DONE)
+      makeQuickReply([
+        { label: 'Change time', text: 'Change time' },
+        { label: 'Start over', text: 'reset' },
+      ])
     );
   }
 
@@ -265,16 +315,11 @@ async function handleEvent(event) {
       const detected = detectIntent(userText);
       const allowed = ['Botox', 'Filler', 'Skin/Facial', 'Anti-aging/Lifting'];
 
-      const picked =
-        allowed.find((a) => a.toLowerCase() === userText.toLowerCase()) || detected;
-
-      if (!picked) {
-        return reply(event, makeText('What are you interested in?'), intentQuickReply());
-      }
+      const picked = allowed.find((a) => a.toLowerCase() === userText.toLowerCase()) || detected;
+      if (!picked) return reply(event, makeText('What are you interested in?'), intentQuickReply());
 
       session.data.intent = picked;
       session.step = STEPS.AREA;
-
       return reply(event, makeText(`Got it: ${picked}. Which area?`), areaQuickReply());
     }
 
@@ -293,22 +338,32 @@ async function handleEvent(event) {
     case STEPS.TIMING: {
       session.data.timing = userText;
       session.step = STEPS.SLOT;
-      return reply(event, makeText('Pick a time slot:'), slotQuickReply());
+      return reply(event, makeText('Pick a time slot:'), slotQuickReplyForTiming(session.data.timing));
     }
 
     case STEPS.SLOT: {
-      const slot =
-        DEMO_SLOTS.find((s) => s.toLowerCase() === userText.toLowerCase()) ||
-        DEMO_SLOTS.find((s) => userText.toLowerCase().includes(s.toLowerCase()));
+      const slots = buildSlots(session.data.timing);
+      const picked =
+        slots.find((s) => s.toLowerCase() === userText.toLowerCase()) ||
+        slots.find((s) => userText.toLowerCase().includes(s.toLowerCase()));
 
-      if (!slot) {
-        return reply(event, makeText('Please pick one of the slots below:'), slotQuickReply());
+      if (!picked) {
+        return reply(event, makeText('Please pick one of the slots below:'), slotQuickReplyForTiming(session.data.timing));
       }
 
-      session.data.slot = slot;
+      session.data.slot = picked;
       session.step = STEPS.CONTACT;
 
-      return reply(event, makeText(currentQuestionForStep(STEPS.CONTACT, session)));
+      return reply(
+        event,
+        makeText(
+          `Great. Please send:\n` +
+            `1) Your name\n` +
+            `2) Your phone number\n\n` +
+            `Example: "N, 0812345678"\n\n` +
+            `Final suitability is confirmed by the clinician.`
+        )
+      );
     }
 
     case STEPS.CONTACT: {
@@ -367,6 +422,34 @@ async function handleEvent(event) {
   }
 }
 
+function stepPrompt(session) {
+  switch (session.step) {
+    case STEPS.AREA:
+      return `Got it: ${session.data.intent}. Which area?`;
+    case STEPS.BUDGET:
+      return 'Budget range?';
+    case STEPS.TIMING:
+      return 'When do you want to come?';
+    case STEPS.CONTACT:
+      return 'Please send "Name, Phone" (example: "N, 0812345678").';
+    default:
+      return 'What are you interested in?';
+  }
+}
+
+function quickReplyForStep(session) {
+  switch (session.step) {
+    case STEPS.AREA:
+      return areaQuickReply();
+    case STEPS.BUDGET:
+      return budgetQuickReply();
+    case STEPS.TIMING:
+      return timingQuickReply();
+    default:
+      return intentQuickReply();
+  }
+}
+
 // --------------------
 // Quick replies
 // --------------------
@@ -404,10 +487,6 @@ function timingQuickReply() {
     { label: 'This week', text: 'This week' },
     { label: 'Next week', text: 'Next week' },
   ]);
-}
-
-function slotQuickReply() {
-  return makeQuickReply(DEMO_SLOTS.map((s) => ({ label: s, text: s })));
 }
 
 // --------------------
