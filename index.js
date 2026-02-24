@@ -35,55 +35,129 @@ const sessions = new Map();
 
 const STEPS = {
   LANG: 'lang',
+  MENU: 'menu',
+
   INTENT: 'intent',
+  INTENT_OTHER: 'intent_other',
+
   AREA: 'area',
+  AREA_OTHER: 'area_other',
+
   BUDGET: 'budget',
+  BUDGET_OTHER: 'budget_other',
+
   DAY: 'day',
+  DAY_OTHER: 'day_other',
+
   TIME_OF_DAY: 'time_of_day',
   TIME_EXACT: 'time_exact',
+
   CONTACT: 'contact',
   CONFIRM: 'confirm',
   DONE: 'done',
+
+  FAQ: 'faq',
 };
 
 // --------------------
-// Translations
+// Copy (Thai + English)
 // --------------------
 const T = {
   en: {
-    chooseLang: "Please choose your language:",
-    welcome: "Welcome! What service are you interested in?",
-    askArea: "Which area?",
-    askBudget: "What is your budget range?",
-    askDay: "Which day would you like to come?",
-    askTimeOfDay: "Which time of day?",
-    askExactTime: "Please type your preferred time (e.g., 3:30pm)",
-    askContact: "Please send: Name, Phone (example: N, 0812345678)",
-    confirmTitle: "Please confirm your booking:",
-    yes: "YES",
-    edit: "EDIT",
-    booked: "Booked (demo) ✅ We’ll contact you shortly.",
-    invalidPhone: "Phone number looks invalid. Please resend (example: N, 0812345678).",
-    needPick: "Please choose one of the options below.",
-    reset: "Reset ✅ Let’s start again. What service are you interested in?",
+    chooseLang: 'Please choose your language:',
+    menuTitle: 'What would you like to do?',
+    menuBook: 'Book an appointment',
+    menuFaq: 'Quick questions',
+
+    welcome: 'Welcome! What service are you interested in?',
+    askOtherService: 'Please type the service you want (e.g., HIFU / Pico laser / Thread lift).',
+
+    askArea: 'Which area?',
+    askOtherArea: 'Please type the area you want (e.g., cheeks, nose, under-eye, full face).',
+
+    askBudget: 'What is your budget range?',
+    askOtherBudget: 'Please type your budget (e.g., 12,000 THB or “under 20k”).',
+
+    askDay: 'Which day would you like to come?',
+    askOtherDay: 'Please type your preferred day/date (e.g., “Friday” or “Mar 7”).',
+
+    askTimeOfDay: 'Which time of day?',
+    askExactTime: 'Please type your preferred time (e.g., 3:30pm).',
+
+    askContact: 'Please send: Name, Phone (example: N, 0812345678)',
+    confirmTitle: 'Please confirm your booking:',
+    yes: 'YES',
+    edit: 'EDIT',
+    booked: 'Booked (demo) ✅ We’ll contact you shortly.',
+    invalidPhone: 'Phone number looks invalid. Please resend (example: N, 0812345678).',
+    needPick: 'Please choose one of the options below.',
+    reset: 'Reset ✅ Let’s start again.',
+
+    faqTitle: 'Quick questions — choose one:',
+    faqLocation: 'Location / Branches',
+    faqPrices: 'Typical prices',
+    faqPromo: 'Promotions',
+    faqDoctor: 'Doctor & safety',
+    faqAftercare: 'Aftercare',
+    faqTalkHuman: 'Talk to staff',
+
+    faqAnswers: {
+      location: 'Demo answer: We can operate for clinics in Bangkok. Share your branch address and we’ll customize.',
+      prices: 'Demo answer: Pricing depends on product/area/units. Tell me service + area and I’ll estimate a range.',
+      promo: 'Demo answer: Promotions vary weekly. Tell me the service you want and your budget.',
+      doctor: 'Demo answer: Always ask for certified doctor, product authenticity, and clear aftercare.',
+      aftercare: 'Demo answer: Avoid alcohol, heavy workout 24h; follow clinic instructions; report unusual swelling/pain.',
+      talkHuman: 'Demo answer: Please leave your name + phone and a staff member will call you back.',
+    },
   },
+
   th: {
-    chooseLang: "กรุณาเลือกภาษาของคุณ:",
-    welcome: "ยินดีต้อนรับ! คุณสนใจบริการอะไร?",
-    askArea: "ต้องการทำบริเวณไหน?",
-    askBudget: "งบประมาณเท่าไหร่?",
-    askDay: "ต้องการมาวันไหน?",
-    askTimeOfDay: "ต้องการช่วงเวลาไหน?",
-    askExactTime: "กรุณาพิมพ์เวลาที่ต้องการ (เช่น 15:30)",
-    askContact: "กรุณาส่ง: ชื่อ, เบอร์โทร (เช่น N, 0812345678)",
-    confirmTitle: "กรุณายืนยันการจอง:",
-    yes: "ยืนยัน",
-    edit: "แก้ไข",
-    booked: "จองเรียบร้อย (เดโม) ✅ ทางคลินิกจะติดต่อกลับ",
-    invalidPhone: "เบอร์โทรไม่ถูกต้อง กรุณาส่งใหม่ (เช่น N, 0812345678)",
-    needPick: "กรุณาเลือกจากตัวเลือกด้านล่าง",
-    reset: "รีเซ็ตแล้ว ✅ เริ่มใหม่อีกครั้ง คุณสนใจบริการอะไร?",
-  }
+    chooseLang: 'กรุณาเลือกภาษาของคุณ:',
+    menuTitle: 'คุณต้องการทำอะไร?',
+    menuBook: 'จองคิว',
+    menuFaq: 'คำถามด่วน',
+
+    welcome: 'ยินดีต้อนรับ! คุณสนใจบริการอะไร?',
+    askOtherService: 'กรุณาพิมพ์บริการที่ต้องการ (เช่น HIFU / Pico laser / ร้อยไหม)',
+
+    askArea: 'ต้องการทำบริเวณไหน?',
+    askOtherArea: 'กรุณาพิมพ์บริเวณที่ต้องการ (เช่น แก้ม จมูก ใต้ตา ทั้งหน้า)',
+
+    askBudget: 'งบประมาณเท่าไหร่?',
+    askOtherBudget: 'กรุณาพิมพ์งบประมาณ (เช่น 12,000 บาท หรือ “ไม่เกิน 20k”)',
+
+    askDay: 'ต้องการมาวันไหน?',
+    askOtherDay: 'กรุณาพิมพ์วัน/วันที่ต้องการ (เช่น “ศุกร์” หรือ “7 มี.ค.”)',
+
+    askTimeOfDay: 'ต้องการช่วงเวลาไหน?',
+    askExactTime: 'กรุณาพิมพ์เวลาที่ต้องการ (เช่น 15:30)',
+
+    askContact: 'กรุณาส่ง: ชื่อ, เบอร์โทร (เช่น N, 0812345678)',
+    confirmTitle: 'กรุณายืนยันการจอง:',
+    yes: 'ยืนยัน',
+    edit: 'แก้ไข',
+    booked: 'จองเรียบร้อย (เดโม) ✅ ทางคลินิกจะติดต่อกลับ',
+    invalidPhone: 'เบอร์โทรไม่ถูกต้อง กรุณาส่งใหม่ (เช่น N, 0812345678)',
+    needPick: 'กรุณาเลือกจากตัวเลือกด้านล่าง',
+    reset: 'รีเซ็ตแล้ว ✅ เริ่มใหม่อีกครั้ง',
+
+    faqTitle: 'คำถามด่วน — เลือกได้เลย:',
+    faqLocation: 'สาขา / โลเคชัน',
+    faqPrices: 'ราคาประมาณ',
+    faqPromo: 'โปรโมชัน',
+    faqDoctor: 'หมอและความปลอดภัย',
+    faqAftercare: 'การดูแลหลังทำ',
+    faqTalkHuman: 'คุยกับพนักงาน',
+
+    faqAnswers: {
+      location: 'คำตอบเดโม: สามารถทำได้สำหรับคลินิกในกรุงเทพฯ ส่งที่อยู่สาขาแล้วเราจะปรับให้เข้ากับคุณ',
+      prices: 'คำตอบเดโม: ราคาขึ้นกับตัวยา/บริเวณ/จำนวนยูนิต บอกบริการ+บริเวณ แล้วจะประเมินช่วงราคาให้',
+      promo: 'คำตอบเดโม: โปรโมชันเปลี่ยนทุกสัปดาห์ บอกบริการที่สนใจและงบประมาณได้เลย',
+      doctor: 'คำตอบเดโม: ควรถามใบประกอบวิชาชีพ แหล่งผลิตภัณฑ์แท้ และคำแนะนำหลังทำที่ชัดเจน',
+      aftercare: 'คำตอบเดโม: งดแอลกอฮอล์/ออกกำลังหนัก 24 ชม. ทำตามคำแนะนำคลินิก หากบวม/ปวดผิดปกติให้ติดต่อทันที',
+      talkHuman: 'คำตอบเดโม: กรุณาทิ้งชื่อ+เบอร์โทร แล้วเจ้าหน้าที่จะติดต่อกลับ',
+    },
+  },
 };
 
 function t(session, key) {
@@ -101,13 +175,36 @@ function getUserId(event) {
 function getSession(userId) {
   const existing = sessions.get(userId);
   if (existing) return existing;
-  const fresh = { step: STEPS.LANG, data: { lang: null }, updatedAt: Date.now() };
+
+  const fresh = {
+    step: STEPS.LANG,
+    data: {
+      lang: null,
+      // booking fields:
+      intent: null,
+      area: null,
+      budget: null,
+      day: null,
+      timeWindow: null,
+      timeExact: null,
+      name: null,
+      phone: null,
+      // meta
+      path: null, // 'book' or 'faq'
+    },
+    updatedAt: Date.now(),
+  };
+
   sessions.set(userId, fresh);
   return fresh;
 }
 
 function resetSession(userId) {
-  sessions.set(userId, { step: STEPS.LANG, data: { lang: null }, updatedAt: Date.now() });
+  sessions.set(userId, {
+    step: STEPS.LANG,
+    data: { lang: null, path: null },
+    updatedAt: Date.now(),
+  });
 }
 
 function touch(session) {
@@ -141,8 +238,19 @@ function validatePhone(text) {
   return digits;
 }
 
+function isOther(text) {
+  return /^other$/i.test(text) || /^อื่น/i.test(text);
+}
+
+function bangkokISO() {
+  // human-readable Bangkok time plus ISO for sorting
+  const now = new Date();
+  const bkk = now.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok' });
+  return { iso: now.toISOString(), bangkok: bkk };
+}
+
 // --------------------
-// Google Sheets sender
+// Google Sheets sender (Apps Script Web App)
 // --------------------
 async function sendLeadToSheet(lead) {
   const url = process.env.LEADS_API_URL;
@@ -187,72 +295,199 @@ async function handleEvent(event) {
   const session = getSession(userId);
   touch(session);
 
-  // STEP 0: Language
+  // --------------------
+  // STEP: Language
+  // --------------------
   if (session.step === STEPS.LANG) {
     if (/^english$/i.test(userText)) {
       session.data.lang = 'en';
-      session.step = STEPS.INTENT;
-      return reply(event, makeText(T.en.welcome), intentQuickReplyEn());
+      session.step = STEPS.MENU;
+      return reply(event, makeText(t(session, 'menuTitle')), menuQuickReply(session));
     }
     if (/^ภาษาไทย$/i.test(userText)) {
       session.data.lang = 'th';
-      session.step = STEPS.INTENT;
-      return reply(event, makeText(T.th.welcome), intentQuickReplyTh());
+      session.step = STEPS.MENU;
+      return reply(event, makeText(t(session, 'menuTitle')), menuQuickReply(session));
     }
     return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
   }
 
-  // STEP 1: Intent
+  // --------------------
+  // STEP: Menu
+  // --------------------
+  if (session.step === STEPS.MENU) {
+    const lang = session.data.lang || 'en';
+
+    const bookRegex = lang === 'th' ? /^จองคิว$/i : /^book an appointment$/i;
+    const faqRegex = lang === 'th' ? /^คำถามด่วน$/i : /^quick questions$/i;
+
+    if (bookRegex.test(userText)) {
+      session.data.path = 'book';
+      session.step = STEPS.INTENT;
+      return reply(event, makeText(t(session, 'welcome')), intentQuickReply(session));
+    }
+
+    if (faqRegex.test(userText)) {
+      session.data.path = 'faq';
+      session.step = STEPS.FAQ;
+      return reply(event, makeText(t(session, 'faqTitle')), faqQuickReply(session));
+    }
+
+    return reply(event, makeText(t(session, 'needPick')), menuQuickReply(session));
+  }
+
+  // --------------------
+  // STEP: FAQ
+  // --------------------
+  if (session.step === STEPS.FAQ) {
+    const lang = session.data.lang || 'en';
+
+    // If user types anything else, still allow
+    const map = lang === 'th'
+      ? {
+          [T.th.faqLocation]: 'location',
+          [T.th.faqPrices]: 'prices',
+          [T.th.faqPromo]: 'promo',
+          [T.th.faqDoctor]: 'doctor',
+          [T.th.faqAftercare]: 'aftercare',
+          [T.th.faqTalkHuman]: 'talkHuman',
+        }
+      : {
+          [T.en.faqLocation]: 'location',
+          [T.en.faqPrices]: 'prices',
+          [T.en.faqPromo]: 'promo',
+          [T.en.faqDoctor]: 'doctor',
+          [T.en.faqAftercare]: 'aftercare',
+          [T.en.faqTalkHuman]: 'talkHuman',
+        };
+
+    const key = map[userText];
+
+    if (!key) {
+      return reply(event, makeText(t(session, 'needPick')), faqQuickReply(session));
+    }
+
+    if (key === 'talkHuman') {
+      session.step = STEPS.CONTACT;
+      // mark that this is a contact-only flow
+      session.data.intent = session.data.intent || 'Quick Question';
+      session.data.area = session.data.area || '-';
+      session.data.budget = session.data.budget || '-';
+      session.data.day = session.data.day || '-';
+      session.data.timeExact = session.data.timeExact || '-';
+      return reply(event, makeText(t(session, 'askContact')));
+    }
+
+    const answer = (T[lang].faqAnswers[key] || T.en.faqAnswers[key] || 'Demo');
+    // Keep user in FAQ so they can pick more
+    return reply(event, makeText(answer + "\n\n" + t(session, 'faqTitle')), faqQuickReply(session));
+  }
+
+  // --------------------
+  // BOOKING FLOW
+  // --------------------
+
+  // STEP: Intent
   if (session.step === STEPS.INTENT) {
+    if (isOther(userText)) {
+      session.step = STEPS.INTENT_OTHER;
+      return reply(event, makeText(t(session, 'askOtherService')));
+    }
+
     session.data.intent = userText;
     session.step = STEPS.AREA;
     return reply(event, makeText(t(session, 'askArea')), areaQuickReply(session));
   }
 
-  // STEP 2: Area
+  // STEP: Intent Other (free text)
+  if (session.step === STEPS.INTENT_OTHER) {
+    session.data.intent = userText;
+    session.step = STEPS.AREA;
+    return reply(event, makeText(t(session, 'askArea')), areaQuickReply(session));
+  }
+
+  // STEP: Area
   if (session.step === STEPS.AREA) {
+    if (isOther(userText)) {
+      session.step = STEPS.AREA_OTHER;
+      return reply(event, makeText(t(session, 'askOtherArea')));
+    }
+
     session.data.area = userText;
     session.step = STEPS.BUDGET;
     return reply(event, makeText(t(session, 'askBudget')), budgetQuickReply(session));
   }
 
-  // STEP 3: Budget
+  // STEP: Area Other
+  if (session.step === STEPS.AREA_OTHER) {
+    session.data.area = userText;
+    session.step = STEPS.BUDGET;
+    return reply(event, makeText(t(session, 'askBudget')), budgetQuickReply(session));
+  }
+
+  // STEP: Budget
   if (session.step === STEPS.BUDGET) {
+    if (isOther(userText)) {
+      session.step = STEPS.BUDGET_OTHER;
+      return reply(event, makeText(t(session, 'askOtherBudget')));
+    }
+
     session.data.budget = userText;
     session.step = STEPS.DAY;
     return reply(event, makeText(t(session, 'askDay')), dayQuickReply(session));
   }
 
-  // STEP 4: Day
+  // STEP: Budget Other
+  if (session.step === STEPS.BUDGET_OTHER) {
+    session.data.budget = userText;
+    session.step = STEPS.DAY;
+    return reply(event, makeText(t(session, 'askDay')), dayQuickReply(session));
+  }
+
+  // STEP: Day
   if (session.step === STEPS.DAY) {
+    if (isOther(userText)) {
+      session.step = STEPS.DAY_OTHER;
+      return reply(event, makeText(t(session, 'askOtherDay')));
+    }
+
     session.data.day = userText;
     session.step = STEPS.TIME_OF_DAY;
     return reply(event, makeText(t(session, 'askTimeOfDay')), timeOfDayQuickReply(session));
   }
 
-  // STEP 5: Time of day
-  if (session.step === STEPS.TIME_OF_DAY) {
-    session.data.timeWindow = userText;
-    if (/other|อื่น/i.test(userText)) {
-      session.step = STEPS.TIME_EXACT;
-      return reply(event, makeText(t(session, 'askExactTime')));
-    } else {
-      session.data.timeExact = userText;
-      session.step = STEPS.CONTACT;
-      return reply(event, makeText(t(session, 'askContact')));
-    }
+  // STEP: Day Other
+  if (session.step === STEPS.DAY_OTHER) {
+    session.data.day = userText;
+    session.step = STEPS.TIME_OF_DAY;
+    return reply(event, makeText(t(session, 'askTimeOfDay')), timeOfDayQuickReply(session));
   }
 
-  // STEP 6: Exact time
+  // STEP: Time of day
+  if (session.step === STEPS.TIME_OF_DAY) {
+    session.data.timeWindow = userText;
+
+    if (isOther(userText)) {
+      session.step = STEPS.TIME_EXACT;
+      return reply(event, makeText(t(session, 'askExactTime')));
+    }
+
+    // Set a default "exact" time window label
+    session.data.timeExact = userText;
+    session.step = STEPS.CONTACT;
+    return reply(event, makeText(t(session, 'askContact')));
+  }
+
+  // STEP: Exact time
   if (session.step === STEPS.TIME_EXACT) {
     session.data.timeExact = userText;
     session.step = STEPS.CONTACT;
     return reply(event, makeText(t(session, 'askContact')));
   }
 
-  // STEP 7: Contact
+  // STEP: Contact
   if (session.step === STEPS.CONTACT) {
-    const parts = userText.split(',').map(p => p.trim()).filter(Boolean);
+    const parts = userText.split(',').map((p) => p.trim()).filter(Boolean);
     if (parts.length < 2) {
       return reply(event, makeText(t(session, 'askContact')));
     }
@@ -281,14 +516,26 @@ async function handleEvent(event) {
     return reply(event, makeText(summary), confirmQuickReply(session));
   }
 
-  // STEP 8: Confirm
+  // STEP: Confirm
   if (session.step === STEPS.CONFIRM) {
     if (/^yes$|^ยืนยัน$/i.test(userText)) {
+      const ts = bangkokISO();
       const lead = {
-        ts: new Date().toISOString(),
+        ts_iso: ts.iso,
+        ts_bangkok: ts.bangkok,
         userId,
-        ...session.data,
+        lang: session.data.lang,
+        intent: session.data.intent,
+        area: session.data.area,
+        budget: session.data.budget,
+        day: session.data.day,
+        timeWindow: session.data.timeWindow,
+        timeExact: session.data.timeExact,
+        name: session.data.name,
+        phone: session.data.phone,
+        source: 'line',
       };
+
       await sendLeadToSheet(lead);
       session.step = STEPS.DONE;
       return reply(event, makeText(t(session, 'booked')));
@@ -296,7 +543,6 @@ async function handleEvent(event) {
 
     if (/^edit$|^แก้ไข$/i.test(userText)) {
       resetSession(userId);
-      const s = getSession(userId);
       return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
     }
 
@@ -314,70 +560,150 @@ async function handleEvent(event) {
 // --------------------
 function langQuickReply() {
   return makeQuickReply([
-    { label: "English", text: "English" },
-    { label: "ภาษาไทย", text: "ภาษาไทย" },
+    { label: 'English', text: 'English' },
+    { label: 'ภาษาไทย', text: 'ภาษาไทย' },
   ]);
 }
 
-function intentQuickReplyEn() {
+function menuQuickReply(session) {
+  const lang = session.data.lang || 'en';
+  if (lang === 'th') {
+    return makeQuickReply([
+      { label: T.th.menuBook, text: T.th.menuBook },
+      { label: T.th.menuFaq, text: T.th.menuFaq },
+    ]);
+  }
   return makeQuickReply([
-    { label: 'Botox', text: 'Botox' },
-    { label: 'Filler', text: 'Filler' },
-    { label: 'Laser', text: 'Laser' },
-    { label: 'Facial', text: 'Facial' },
-    { label: 'Other', text: 'Other' },
+    { label: T.en.menuBook, text: T.en.menuBook },
+    { label: T.en.menuFaq, text: T.en.menuFaq },
   ]);
 }
 
-function intentQuickReplyTh() {
-  return makeQuickReply([
-    { label: 'โบท็อกซ์', text: 'Botox' },
-    { label: 'ฟิลเลอร์', text: 'Filler' },
-    { label: 'เลเซอร์', text: 'Laser' },
-    { label: 'ทรีทเมนต์หน้า', text: 'Facial' },
-    { label: 'อื่น ๆ', text: 'Other' },
-  ]);
+function intentQuickReply(session) {
+  const lang = session.data.lang || 'en';
+  // Thailand-popular aesthetic services (broad but not insane)
+  const items = [
+    { en: 'Botox', th: 'โบท็อกซ์' },
+    { en: 'Filler', th: 'ฟิลเลอร์' },
+    { en: 'HIFU', th: 'HIFU' },
+    { en: 'Thermage', th: 'Thermage' },
+    { en: 'Ultherapy', th: 'Ultherapy' },
+    { en: 'Laser (Pico/IPL)', th: 'เลเซอร์ (Pico/IPL)' },
+    { en: 'Acne scar treatment', th: 'รักษาหลุมสิว' },
+    { en: 'Skin booster', th: 'สกินบูสเตอร์' },
+    { en: 'Thread lift', th: 'ร้อยไหม' },
+    { en: 'Facial', th: 'ทรีทเมนต์หน้า' },
+    { en: 'Other', th: 'อื่น ๆ' },
+  ];
+
+  return makeQuickReply(
+    items.map((x) => ({
+      label: lang === 'th' ? x.th : x.en,
+      text: x.en === 'Other' ? 'Other' : (lang === 'th' ? x.en : x.en),
+    }))
+  );
 }
 
 function areaQuickReply(session) {
-  return makeQuickReply([
-    { label: 'Forehead', text: 'Forehead' },
-    { label: 'Jawline', text: 'Jawline' },
-    { label: 'Under-eye', text: 'Under-eye' },
-    { label: 'Lips', text: 'Lips' },
-    { label: 'Other', text: 'Other' },
-  ]);
+  const lang = session.data.lang || 'en';
+  const items = [
+    { en: 'Forehead', th: 'หน้าผาก' },
+    { en: 'Jawline', th: 'กราม' },
+    { en: 'Under-eye', th: 'ใต้ตา' },
+    { en: 'Lips', th: 'ปาก' },
+    { en: 'Cheeks', th: 'แก้ม' },
+    { en: 'Chin', th: 'คาง' },
+    { en: 'Nose', th: 'จมูก' },
+    { en: 'Full face', th: 'ทั้งหน้า' },
+    { en: 'Other', th: 'อื่น ๆ' },
+  ];
+
+  return makeQuickReply(
+    items.map((x) => ({
+      label: lang === 'th' ? x.th : x.en,
+      text: x.en === 'Other' ? 'Other' : x.en,
+    }))
+  );
 }
 
 function budgetQuickReply(session) {
-  return makeQuickReply([
-    { label: '< 5k', text: '<5k' },
-    { label: '5k–10k', text: '5k–10k' },
-    { label: '10k–20k', text: '10k–20k' },
-    { label: '20k+', text: '20k+' },
-    { label: 'Other', text: 'Other' },
-  ]);
+  const lang = session.data.lang || 'en';
+  const items = [
+    { en: '< 5k', th: '< 5k' },
+    { en: '5k–10k', th: '5k–10k' },
+    { en: '10k–20k', th: '10k–20k' },
+    { en: '20k–40k', th: '20k–40k' },
+    { en: '40k+', th: '40k+' },
+    { en: 'Other', th: 'อื่น ๆ' },
+  ];
+
+  return makeQuickReply(
+    items.map((x) => ({
+      label: lang === 'th' ? x.th : x.en,
+      text: x.en === 'Other' ? 'Other' : x.en,
+    }))
+  );
 }
 
 function dayQuickReply(session) {
-  return makeQuickReply([
-    { label: 'Monday', text: 'Monday' },
-    { label: 'Tuesday', text: 'Tuesday' },
-    { label: 'Wednesday', text: 'Wednesday' },
-    { label: 'Thursday', text: 'Thursday' },
-    { label: 'Friday', text: 'Friday' },
-    { label: 'Saturday', text: 'Saturday' },
-    { label: 'Sunday', text: 'Sunday' },
-    { label: 'Other', text: 'Other' },
-  ]);
+  const lang = session.data.lang || 'en';
+  const items = [
+    { en: 'Monday', th: 'จันทร์' },
+    { en: 'Tuesday', th: 'อังคาร' },
+    { en: 'Wednesday', th: 'พุธ' },
+    { en: 'Thursday', th: 'พฤหัส' },
+    { en: 'Friday', th: 'ศุกร์' },
+    { en: 'Saturday', th: 'เสาร์' },
+    { en: 'Sunday', th: 'อาทิตย์' },
+    { en: 'Other', th: 'อื่น ๆ' },
+  ];
+
+  return makeQuickReply(
+    items.map((x) => ({
+      label: lang === 'th' ? x.th : x.en,
+      text: x.en === 'Other' ? 'Other' : x.en,
+    }))
+  );
 }
 
 function timeOfDayQuickReply(session) {
+  const lang = session.data.lang || 'en';
+  // 4 blocks (better than 3; still simple)
+  const items = [
+    { en: 'Morning (10–12)', th: 'เช้า (10–12)' },
+    { en: 'Afternoon (12–15)', th: 'บ่าย (12–15)' },
+    { en: 'Late (15–18)', th: 'เย็น (15–18)' },
+    { en: 'Evening (18–20)', th: 'ค่ำ (18–20)' },
+    { en: 'Other', th: 'อื่น ๆ' },
+  ];
+
+  return makeQuickReply(
+    items.map((x) => ({
+      label: lang === 'th' ? x.th : x.en,
+      text: x.en === 'Other' ? 'Other' : x.en,
+    }))
+  );
+}
+
+function faqQuickReply(session) {
+  const lang = session.data.lang || 'en';
+  if (lang === 'th') {
+    return makeQuickReply([
+      { label: T.th.faqLocation, text: T.th.faqLocation },
+      { label: T.th.faqPrices, text: T.th.faqPrices },
+      { label: T.th.faqPromo, text: T.th.faqPromo },
+      { label: T.th.faqDoctor, text: T.th.faqDoctor },
+      { label: T.th.faqAftercare, text: T.th.faqAftercare },
+      { label: T.th.faqTalkHuman, text: T.th.faqTalkHuman },
+    ]);
+  }
   return makeQuickReply([
-    { label: 'Morning', text: 'Morning' },
-    { label: 'Afternoon', text: 'Afternoon' },
-    { label: 'Evening', text: 'Evening' },
-    { label: 'Other', text: 'Other' },
+    { label: T.en.faqLocation, text: T.en.faqLocation },
+    { label: T.en.faqPrices, text: T.en.faqPrices },
+    { label: T.en.faqPromo, text: T.en.faqPromo },
+    { label: T.en.faqDoctor, text: T.en.faqDoctor },
+    { label: T.en.faqAftercare, text: T.en.faqAftercare },
+    { label: T.en.faqTalkHuman, text: T.en.faqTalkHuman },
   ]);
 }
 
