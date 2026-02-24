@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fetch from 'node-fetch';
 import { middleware, messagingApi } from '@line/bot-sdk';
 
 const config = {
@@ -13,8 +14,10 @@ const client = new messagingApi.MessagingApiClient({
 
 const app = express();
 
+// Health check
 app.get('/', (_, res) => res.send('OK'));
 
+// LINE webhook
 app.post('/webhook', middleware(config), async (req, res) => {
   try {
     const events = req.body.events || [];
@@ -27,19 +30,67 @@ app.post('/webhook', middleware(config), async (req, res) => {
 });
 
 // --------------------
-// In-memory sessions
+// Session store (in-memory)
 // --------------------
 const sessions = new Map();
 
 const STEPS = {
+  LANG: 'lang',
   INTENT: 'intent',
   AREA: 'area',
   BUDGET: 'budget',
-  TIMING: 'timing',
-  SLOT: 'slot',
+  DAY: 'day',
+  TIME_OF_DAY: 'time_of_day',
+  TIME_EXACT: 'time_exact',
   CONTACT: 'contact',
+  CONFIRM: 'confirm',
   DONE: 'done',
 };
+
+// --------------------
+// Translations
+// --------------------
+const T = {
+  en: {
+    chooseLang: "Please choose your language:",
+    welcome: "Welcome! What service are you interested in?",
+    askArea: "Which area?",
+    askBudget: "What is your budget range?",
+    askDay: "Which day would you like to come?",
+    askTimeOfDay: "Which time of day?",
+    askExactTime: "Please type your preferred time (e.g., 3:30pm)",
+    askContact: "Please send: Name, Phone (example: N, 0812345678)",
+    confirmTitle: "Please confirm your booking:",
+    yes: "YES",
+    edit: "EDIT",
+    booked: "Booked (demo) ✅ We’ll contact you shortly.",
+    invalidPhone: "Phone number looks invalid. Please resend (example: N, 0812345678).",
+    needPick: "Please choose one of the options below.",
+    reset: "Reset ✅ Let’s start again. What service are you interested in?",
+  },
+  th: {
+    chooseLang: "กรุณาเลือกภาษาของคุณ:",
+    welcome: "ยินดีต้อนรับ! คุณสนใจบริการอะไร?",
+    askArea: "ต้องการทำบริเวณไหน?",
+    askBudget: "งบประมาณเท่าไหร่?",
+    askDay: "ต้องการมาวันไหน?",
+    askTimeOfDay: "ต้องการช่วงเวลาไหน?",
+    askExactTime: "กรุณาพิมพ์เวลาที่ต้องการ (เช่น 15:30)",
+    askContact: "กรุณาส่ง: ชื่อ, เบอร์โทร (เช่น N, 0812345678)",
+    confirmTitle: "กรุณายืนยันการจอง:",
+    yes: "ยืนยัน",
+    edit: "แก้ไข",
+    booked: "จองเรียบร้อย (เดโม) ✅ ทางคลินิกจะติดต่อกลับ",
+    invalidPhone: "เบอร์โทรไม่ถูกต้อง กรุณาส่งใหม่ (เช่น N, 0812345678)",
+    needPick: "กรุณาเลือกจากตัวเลือกด้านล่าง",
+    reset: "รีเซ็ตแล้ว ✅ เริ่มใหม่อีกครั้ง คุณสนใจบริการอะไร?",
+  }
+};
+
+function t(session, key) {
+  const lang = session.data.lang || 'en';
+  return T[lang][key] || T.en[key] || key;
+}
 
 // --------------------
 // Helpers
@@ -51,13 +102,13 @@ function getUserId(event) {
 function getSession(userId) {
   const existing = sessions.get(userId);
   if (existing) return existing;
-  const fresh = { step: STEPS.INTENT, data: {}, updatedAt: Date.now() };
+  const fresh = { step: STEPS.LANG, data: { lang: null }, updatedAt: Date.now() };
   sessions.set(userId, fresh);
   return fresh;
 }
 
 function resetSession(userId) {
-  sessions.set(userId, { step: STEPS.INTENT, data: {}, updatedAt: Date.now() });
+  sessions.set(userId, { step: STEPS.LANG, data: { lang: null }, updatedAt: Date.now() });
 }
 
 function touch(session) {
@@ -85,64 +136,19 @@ function isReset(text) {
   return /^reset$|^start over$|^restart$|เริ่มใหม่|รีเซ็ต/i.test(text);
 }
 
-function isGreeting(text) {
-  return /^(hi|hello|hey|yo|สวัสดี|หวัดดี|ทัก|ดีครับ|ดีค่ะ)\b/i.test(text);
-}
-
-function detectIntent(text) {
-  const t = (text || '').toLowerCase();
-  if (/botox|โบท็อก/i.test(t)) return 'Botox';
-  if (/filler|ฟิลเลอร์/i.test(t)) return 'Filler';
-  if (/facial|ทรีทเมนต์|ทรีตเมนต์|skin|ผิว/i.test(t)) return 'Skin/Facial';
-  if (/anti[- ]?aging|ยกกระชับ|lifting/i.test(t)) return 'Anti-aging/Lifting';
-  return null;
-}
-
 function validatePhone(text) {
   const digits = (text || '').replace(/[^\d+]/g, '');
   if (digits.length < 8) return null;
   return digits;
 }
 
-function isChangeTime(text) {
-  return /^change time$|^change slot$|^change$/i.test(text);
-}
-
-function normalizeTiming(text) {
-  const t = (text || '').toLowerCase();
-  if (t.includes('today')) return 'Today';
-  if (t.includes('this week')) return 'This week';
-  if (t.includes('next week')) return 'Next week';
-  return text; // keep free-form
-}
-
-// Timing-based demo slots
-function timingSlots(timingRaw) {
-  const timing = normalizeTiming(timingRaw);
-
-  if (timing === 'Today') {
-    return ['Today 2:00pm', 'Today 5:30pm', 'Today 7:00pm'];
-  }
-
-  if (timing === 'This week') {
-    return ['Wed 1:00pm', 'Thu 6:30pm', 'Fri 3:15pm'];
-  }
-
-  if (timing === 'Next week') {
-    return ['Next Mon 1:00pm', 'Next Tue 6:30pm', 'Next Thu 7:15pm'];
-  }
-
-  // fallback
-  return ['Next available 1:00pm', 'Next available 6:30pm', 'Next available 7:15pm'];
-}
-
 // --------------------
-// Send to Google Sheet (Apps Script Web App)
+// Google Sheets sender
 // --------------------
 async function sendLeadToSheet(lead) {
-  const url = process.env.LEADS_API_URL; // MUST be Apps Script /exec URL
+  const url = process.env.LEADS_API_URL;
   if (!url) {
-    console.warn('LEADS_API_URL missing - not sending lead to sheet');
+    console.warn('LEADS_API_URL missing');
     return;
   }
 
@@ -154,11 +160,8 @@ async function sendLeadToSheet(lead) {
     });
 
     const text = await r.text();
-    if (!r.ok) {
-      console.error('Apps Script error', r.status, text);
-    } else {
-      console.log('Lead saved to sheet:', text);
-    }
+    if (!r.ok) console.error('Apps Script error', r.status, text);
+    else console.log('Lead saved to sheet:', text);
   } catch (e) {
     console.error('Failed to send lead to sheet', e);
   }
@@ -176,233 +179,216 @@ async function handleEvent(event) {
   const userText = normalize(event.message.text);
   if (!userText) return;
 
-  // Reset
   if (isReset(userText)) {
     resetSession(userId);
-    return reply(
-      event,
-      makeText('Reset ✅ Let’s start. What are you interested in?'),
-      intentQuickReply()
-    );
+    const s = getSession(userId);
+    return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
   }
 
   const session = getSession(userId);
   touch(session);
 
-  // Greeting works at ANY step (does NOT reset)
-  if (isGreeting(userText)) {
-    // If already done, offer change/start over
-    if (session.step === STEPS.DONE) {
-      return reply(
-        event,
-        makeText('You’re already booked (demo). Want to change time or start over?'),
-        makeQuickReply([
-          { label: 'Change time', text: 'Change time' },
-          { label: 'Start over', text: 'reset' },
-        ])
-      );
+  // STEP 0: Language
+  if (session.step === STEPS.LANG) {
+    if (/^english$/i.test(userText)) {
+      session.data.lang = 'en';
+      session.step = STEPS.INTENT;
+      return reply(event, makeText(T.en.welcome), intentQuickReplyEn());
     }
-    // Otherwise just nudge into the flow
-    if (session.step !== STEPS.INTENT) {
-      return reply(event, makeText('Continue 🙂'));
+    if (/^ภาษาไทย$/i.test(userText)) {
+      session.data.lang = 'th';
+      session.step = STEPS.INTENT;
+      return reply(event, makeText(T.th.welcome), intentQuickReplyTh());
     }
-    return reply(event, makeText('What are you interested in?'), intentQuickReply());
+    return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
   }
 
-  // Help
-  if (/^help$|ช่วยด้วย|ช่วยหน่อย/i.test(userText)) {
-    return reply(
-      event,
-      makeText('I can help you book a consultation. Tap an option below.'),
-      intentQuickReply()
-    );
+  // STEP 1: Intent
+  if (session.step === STEPS.INTENT) {
+    session.data.intent = userText;
+    session.step = STEPS.AREA;
+    return reply(event, makeText(t(session, 'askArea')), areaQuickReply(session));
   }
 
-  // Change time intent AFTER booking
-  if (session.step === STEPS.DONE && isChangeTime(userText)) {
-    session.step = STEPS.TIMING;
-    return reply(event, makeText('Sure — when do you want to come?'), timingQuickReply());
+  // STEP 2: Area
+  if (session.step === STEPS.AREA) {
+    session.data.area = userText;
+    session.step = STEPS.BUDGET;
+    return reply(event, makeText(t(session, 'askBudget')), budgetQuickReply(session));
   }
 
-  switch (session.step) {
-    case STEPS.INTENT: {
-      const detected = detectIntent(userText);
-      const allowed = ['Botox', 'Filler', 'Skin/Facial', 'Anti-aging/Lifting'];
+  // STEP 3: Budget
+  if (session.step === STEPS.BUDGET) {
+    session.data.budget = userText;
+    session.step = STEPS.DAY;
+    return reply(event, makeText(t(session, 'askDay')), dayQuickReply(session));
+  }
 
-      const picked =
-        allowed.find((a) => a.toLowerCase() === userText.toLowerCase()) || detected;
+  // STEP 4: Day
+  if (session.step === STEPS.DAY) {
+    session.data.day = userText;
+    session.step = STEPS.TIME_OF_DAY;
+    return reply(event, makeText(t(session, 'askTimeOfDay')), timeOfDayQuickReply(session));
+  }
 
-      if (!picked) {
-        return reply(event, makeText('What are you interested in?'), intentQuickReply());
-      }
-
-      session.data.intent = picked;
-      session.step = STEPS.AREA;
-
-      return reply(event, makeText(`Got it: ${picked}. Which area?`), areaQuickReply());
-    }
-
-    case STEPS.AREA: {
-      session.data.area = userText;
-      session.step = STEPS.BUDGET;
-      return reply(event, makeText('Budget range?'), budgetQuickReply());
-    }
-
-    case STEPS.BUDGET: {
-      session.data.budget = userText;
-      session.step = STEPS.TIMING;
-      return reply(event, makeText('When do you want to come?'), timingQuickReply());
-    }
-
-    case STEPS.TIMING: {
-      session.data.timing = normalizeTiming(userText);
-      session.step = STEPS.SLOT;
-
-      const slots = timingSlots(session.data.timing);
-      return reply(event, makeText('Pick a time slot:'), slotQuickReply(slots));
-    }
-
-    case STEPS.SLOT: {
-      const slots = timingSlots(session.data.timing);
-      const slot =
-        slots.find((s) => s.toLowerCase() === userText.toLowerCase()) ||
-        slots.find((s) => userText.toLowerCase().includes(s.toLowerCase()));
-
-      if (!slot) {
-        return reply(event, makeText('Please pick one of the slots below:'), slotQuickReply(slots));
-      }
-
-      session.data.slot = slot;
+  // STEP 5: Time of day
+  if (session.step === STEPS.TIME_OF_DAY) {
+    session.data.timeWindow = userText;
+    if (/other|อื่น/i.test(userText)) {
+      session.step = STEPS.TIME_EXACT;
+      return reply(event, makeText(t(session, 'askExactTime')));
+    } else {
+      session.data.timeExact = userText;
       session.step = STEPS.CONTACT;
+      return reply(event, makeText(t(session, 'askContact')));
+    }
+  }
 
-      return reply(
-        event,
-        makeText(
-          `Great. Please send:\n` +
-            `1) Your name\n` +
-            `2) Your phone number\n\n` +
-            `Example: "N, 0812345678"\n\n` +
-            `Final suitability is confirmed by the clinician.`
-        )
-      );
+  // STEP 6: Exact time
+  if (session.step === STEPS.TIME_EXACT) {
+    session.data.timeExact = userText;
+    session.step = STEPS.CONTACT;
+    return reply(event, makeText(t(session, 'askContact')));
+  }
+
+  // STEP 7: Contact
+  if (session.step === STEPS.CONTACT) {
+    const parts = userText.split(',').map(p => p.trim()).filter(Boolean);
+    if (parts.length < 2) {
+      return reply(event, makeText(t(session, 'askContact')));
     }
 
-    case STEPS.CONTACT: {
-      const parts = userText.split(',').map((p) => p.trim()).filter(Boolean);
-      if (parts.length < 2) {
-        return reply(event, makeText('Please send "Name, Phone" (example: "N, 0812345678").'));
-      }
+    const name = parts[0];
+    const phone = validatePhone(parts.slice(1).join(' '));
+    if (!phone) {
+      return reply(event, makeText(t(session, 'invalidPhone')));
+    }
 
-      const name = parts[0];
-      const phone = validatePhone(parts.slice(1).join(' '));
-      if (!phone) {
-        return reply(
-          event,
-          makeText('Phone number looks invalid. Please resend (example: "N, 0812345678").')
-        );
-      }
+    session.data.name = name;
+    session.data.phone = phone;
+    session.step = STEPS.CONFIRM;
 
-      session.data.name = name;
-      session.data.phone = phone;
-      session.step = STEPS.DONE;
+    const summary =
+      `${t(session, 'confirmTitle')}\n\n` +
+      `• Service: ${session.data.intent}\n` +
+      `• Area: ${session.data.area}\n` +
+      `• Budget: ${session.data.budget}\n` +
+      `• Day: ${session.data.day}\n` +
+      `• Time: ${session.data.timeExact}\n` +
+      `• Name: ${session.data.name}\n` +
+      `• Phone: ${session.data.phone}\n\n` +
+      `${t(session, 'yes')} / ${t(session, 'edit')}`;
 
+    return reply(event, makeText(summary), confirmQuickReply(session));
+  }
+
+  // STEP 8: Confirm
+  if (session.step === STEPS.CONFIRM) {
+    if (/^yes$|^ยืนยัน$/i.test(userText)) {
       const lead = {
         ts: new Date().toISOString(),
         userId,
-        intent: session.data.intent,
-        area: session.data.area,
-        budget: session.data.budget,
-        timing: session.data.timing,
-        slot: session.data.slot,
-        name: session.data.name,
-        phone: session.data.phone,
+        ...session.data,
       };
-
-      console.log('NEW LEAD', lead);
       await sendLeadToSheet(lead);
-
-      return reply(
-        event,
-        makeText(
-          `Booked (demo) ✅\n\n` +
-            `Summary:\n` +
-            `• Service: ${lead.intent}\n` +
-            `• Area: ${lead.area}\n` +
-            `• Budget: ${lead.budget}\n` +
-            `• Timing: ${lead.timing}\n` +
-            `• Slot: ${lead.slot}\n\n` +
-            `We’ll confirm shortly. If you need to change time, reply "Change time".`
-        ),
-        makeQuickReply([
-          { label: 'Change time', text: 'Change time' },
-          { label: 'Start over', text: 'reset' },
-        ])
-      );
+      session.step = STEPS.DONE;
+      return reply(event, makeText(t(session, 'booked')));
     }
 
-    case STEPS.DONE: {
-      return reply(
-        event,
-        makeText('You’re already booked (demo). Want to change time or start over?'),
-        makeQuickReply([
-          { label: 'Change time', text: 'Change time' },
-          { label: 'Start over', text: 'reset' },
-        ])
-      );
-    }
-
-    default: {
+    if (/^edit$|^แก้ไข$/i.test(userText)) {
       resetSession(userId);
-      return reply(event, makeText('Let’s start. What are you interested in?'), intentQuickReply());
+      const s = getSession(userId);
+      return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
     }
+
+    return reply(event, makeText(t(session, 'needPick')), confirmQuickReply(session));
+  }
+
+  // DONE
+  if (session.step === STEPS.DONE) {
+    return reply(event, makeText("Type RESET to start a new booking."));
   }
 }
 
 // --------------------
 // Quick replies
 // --------------------
-function intentQuickReply() {
+function langQuickReply() {
   return makeQuickReply([
-    { label: 'Botox', text: 'Botox' },
-    { label: 'Filler', text: 'Filler' },
-    { label: 'Skin/Facial', text: 'Skin/Facial' },
-    { label: 'Anti-aging', text: 'Anti-aging/Lifting' },
+    { label: "English", text: "English" },
+    { label: "ภาษาไทย", text: "ภาษาไทย" },
   ]);
 }
 
-function areaQuickReply() {
+function intentQuickReplyEn() {
+  return makeQuickReply([
+    { label: 'Botox', text: 'Botox' },
+    { label: 'Filler', text: 'Filler' },
+    { label: 'Laser', text: 'Laser' },
+    { label: 'Facial', text: 'Facial' },
+    { label: 'Other', text: 'Other' },
+  ]);
+}
+
+function intentQuickReplyTh() {
+  return makeQuickReply([
+    { label: 'โบท็อกซ์', text: 'Botox' },
+    { label: 'ฟิลเลอร์', text: 'Filler' },
+    { label: 'เลเซอร์', text: 'Laser' },
+    { label: 'ทรีทเมนต์หน้า', text: 'Facial' },
+    { label: 'อื่น ๆ', text: 'Other' },
+  ]);
+}
+
+function areaQuickReply(session) {
   return makeQuickReply([
     { label: 'Forehead', text: 'Forehead' },
     { label: 'Jawline', text: 'Jawline' },
     { label: 'Under-eye', text: 'Under-eye' },
     { label: 'Lips', text: 'Lips' },
-    { label: 'Other', text: 'Other (type it)' },
+    { label: 'Other', text: 'Other' },
   ]);
 }
 
-function budgetQuickReply() {
+function budgetQuickReply(session) {
   return makeQuickReply([
-    { label: 'Under 5k', text: 'Under 5k' },
+    { label: '< 5k', text: '<5k' },
     { label: '5k–10k', text: '5k–10k' },
     { label: '10k–20k', text: '10k–20k' },
     { label: '20k+', text: '20k+' },
+    { label: 'Other', text: 'Other' },
   ]);
 }
 
-function timingQuickReply() {
+function dayQuickReply(session) {
   return makeQuickReply([
-    { label: 'Today', text: 'Today' },
-    { label: 'This week', text: 'This week' },
-    { label: 'Next week', text: 'Next week' },
+    { label: 'Monday', text: 'Monday' },
+    { label: 'Tuesday', text: 'Tuesday' },
+    { label: 'Wednesday', text: 'Wednesday' },
+    { label: 'Thursday', text: 'Thursday' },
+    { label: 'Friday', text: 'Friday' },
+    { label: 'Saturday', text: 'Saturday' },
+    { label: 'Sunday', text: 'Sunday' },
+    { label: 'Other', text: 'Other' },
   ]);
 }
 
-function slotQuickReply(slots) {
-  return makeQuickReply(slots.map((s) => ({ label: s, text: s })));
+function timeOfDayQuickReply(session) {
+  return makeQuickReply([
+    { label: 'Morning', text: 'Morning' },
+    { label: 'Afternoon', text: 'Afternoon' },
+    { label: 'Evening', text: 'Evening' },
+    { label: 'Other', text: 'Other' },
+  ]);
 }
 
-// --------------------
-// Reply wrapper
+function confirmQuickReply(session) {
+  return makeQuickReply([
+    { label: t(session, 'yes'), text: t(session, 'yes') },
+    { label: t(session, 'edit'), text: t(session, 'edit') },
+  ]);
+}
+
 // --------------------
 async function reply(event, message, quickReply = null) {
   const m = quickReply ? { ...message, quickReply } : message;
@@ -413,4 +399,4 @@ async function reply(event, message, quickReply = null) {
 }
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`LINE demo bot running on port ${port}`));
+app.listen(port, () => console.log(`LINE bot running on port ${port}`));
