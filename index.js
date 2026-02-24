@@ -523,6 +523,7 @@ async function handleEvent(event) {
       const lead = {
         ts,
         userId,
+  user_id: userId,        
   intent: session.data.intent,
   area: session.data.area,
   budget: session.data.budget,
