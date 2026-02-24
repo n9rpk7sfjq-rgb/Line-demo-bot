@@ -521,20 +521,23 @@ async function handleEvent(event) {
     if (/^yes$|^ยืนยัน$/i.test(userText)) {
       const ts = bangkokISO();
       const lead = {
-        ts_iso: ts.iso,
-        ts_bangkok: ts.bangkok,
-        userId,
-        lang: session.data.lang,
-        intent: session.data.intent,
-        area: session.data.area,
-        budget: session.data.budget,
-        day: session.data.day,
-        timeWindow: session.data.timeWindow,
-        timeExact: session.data.timeExact,
-        name: session.data.name,
-        phone: session.data.phone,
-        source: 'line',
-      };
+  intent: session.data.intent,
+  area: session.data.area,
+  budget: session.data.budget,
+
+  // ✅ add these two
+  timing: session.data.day || session.data.timing || '-',
+  slot: session.data.timeExact || session.data.timeWindow || session.data.slot || '-',
+
+  // (you can keep these too)
+  day: session.data.day,
+  timeWindow: session.data.timeWindow,
+  timeExact: session.data.timeExact,
+
+  name: session.data.name,
+  phone: session.data.phone,
+  source: 'line',
+};      
 
       await sendLeadToSheet(lead);
       session.step = STEPS.DONE;
