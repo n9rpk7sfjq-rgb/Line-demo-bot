@@ -521,19 +521,16 @@ async function handleEvent(event) {
     if (/^yes$|^ยืนยัน$/i.test(userText)) {
       const ts = bangkokISO();
       const lead = {
+        ts,
+        userId,
   intent: session.data.intent,
   area: session.data.area,
   budget: session.data.budget,
-
-  // ✅ add these two
   timing: session.data.day || session.data.timing || '-',
   slot: session.data.timeExact || session.data.timeWindow || session.data.slot || '-',
-
-  // (you can keep these too)
   day: session.data.day,
   timeWindow: session.data.timeWindow,
   timeExact: session.data.timeExact,
-
   name: session.data.name,
   phone: session.data.phone,
   source: 'line',
