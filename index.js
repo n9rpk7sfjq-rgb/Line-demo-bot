@@ -858,4 +858,46 @@ async function reply(event, message, quickReply = null) {
 }
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`LINE bot running on port ${port}`));
+import fs from 'fs';
+
+// One-time endpoint to create rich menu
+app.get('/create-rich-menu', async (req, res) => {
+  try {
+    const richMenu = {
+      size: { width: 2500, height: 1686 },
+      selected: true,
+      name: "Clinic Menu",
+      chatBarText: "Menu",
+      areas: [
+        {
+          bounds: { x: 0, y: 0, width: 1250, height: 843 },
+          action: { type: "postback", data: "action=book" }
+        },
+        {
+          bounds: { x: 1250, y: 0, width: 1250, height: 843 },
+          action: { type: "postback", data: "action=faq" }
+        },
+        {
+          bounds: { x: 0, y: 843, width: 1250, height: 843 },
+          action: { type: "postback", data: "action=promo" }
+        },
+        {
+          bounds: { x: 1250, y: 843, width: 1250, height: 843 },
+          action: { type: "postback", data: "action=contact" }
+        }
+      ]
+    };
+
+    const result = await client.createRichMenu(richMenu);
+    const richMenuId = result.richMenuId;
+
+    const image = fs.readFileSync('./richmenu.png');
+    await client.setRichMenuImage(richMenuId, image, 'image/png');
+    await client.setDefaultRichMenu(richMenuId);
+
+    res.send(`✅ Rich menu created and set as default! ID: ${richMenuId}`);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send("❌ Error creating rich menu: " + err.message);
+  }
+});app.listen(port, () => console.log(`LINE bot running on port ${port}`));
