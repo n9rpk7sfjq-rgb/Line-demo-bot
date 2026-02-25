@@ -75,7 +75,6 @@ const T = {
     askArea: 'Which area?',
     askOtherArea: 'Please type the area you want (e.g., cheeks, nose, under-eye, full face).',
 
-    // ✅ fixed (removed stray character)
     askBudget: 'What is your budget range?',
     askOtherBudget: 'Please type your budget (e.g., 12,000 THB or “under 20k”).',
 
@@ -102,7 +101,6 @@ const T = {
     faqAftercare: 'Aftercare',
     faqTalkHuman: 'Talk to staff',
 
-    // ✅ exit options to avoid “loop trap”
     faqBookNow: 'Book appointment',
     faqBackMenu: 'Back to menu',
 
@@ -154,7 +152,6 @@ const T = {
     faqAftercare: 'การดูแลหลังทำ',
     faqTalkHuman: 'คุยกับพนักงาน',
 
-    // ✅ exit options
     faqBookNow: 'จองคิวเลย',
     faqBackMenu: 'กลับเมนู',
 
@@ -197,7 +194,7 @@ function getSession(userId) {
       timeExact: null,
       name: null,
       phone: null,
-      path: null, // 'book' or 'faq'
+      path: null,
       faqLastKey: null,
     },
     updatedAt: Date.now(),
@@ -256,6 +253,50 @@ function bangkokTimes() {
   return { iso: now.toISOString(), bangkok: bkk };
 }
 
+// ✅ get text from message OR postback (rich menu can be either)
+function getEventText(event) {
+  if (event.type === 'message' && event.message?.type === 'text') {
+    return normalize(event.message.text);
+  }
+  if (event.type === 'postback') {
+    // If you set rich menu action = postback, put text in data
+    return normalize(event.postback?.data || '');
+  }
+  return '';
+}
+
+// ✅ global router for rich menu labels (short labels supported)
+function classifyCommand(raw) {
+  const s = (raw || '').trim().toLowerCase();
+
+  // EN
+  if (s === 'book appointment' || s === 'book an appointment' || s === 'book' || s === 'appointment') return 'BOOK';
+  if (s === 'quick questions' || s === 'questions' || s === 'quick') return 'FAQ';
+  if (s === 'prices' || s === 'typical prices' || s === 'price') return 'FAQ_PRICES';
+  if (s === 'promotions' || s === 'promo' || s === 'promotion') return 'FAQ_PROMO';
+  if (s === 'location' || s === 'locations' || s === 'branches' || s === 'location / branches') return 'FAQ_LOCATION';
+  if (s === 'talk to staff' || s === 'staff' || s === 'talk') return 'STAFF';
+
+  // TH
+  if (s === 'จองคิว' || s === 'จองคิวเลย') return 'BOOK';
+  if (s === 'คำถามด่วน') return 'FAQ';
+  if (s === 'ราคาประมาณ' || s === 'ราคา') return 'FAQ_PRICES';
+  if (s === 'โปรโมชัน' || s === 'โปรโมชั่น') return 'FAQ_PROMO';
+  if (s === 'สาขา' || s === 'สาขา / โลเคชัน' || s === 'โลเคชัน') return 'FAQ_LOCATION';
+  if (s === 'คุยกับพนักงาน' || s === 'พนักงาน') return 'STAFF';
+
+  return null;
+}
+
+function forceFaqAnswerKey(session, key) {
+  const lang = session.data.lang || 'en';
+  const answer = (T[lang].faqAnswers[key] || T.en.faqAnswers[key] || 'Demo');
+  session.step = STEPS.FAQ;
+  session.data.path = 'faq';
+  session.data.faqLastKey = key;
+  return { answer, quick: faqQuickReply(session) };
+}
+
 // --------------------
 // Google Sheets sender (Apps Script Web App)
 // --------------------
@@ -285,7 +326,7 @@ async function sendLeadToSheet(lead) {
 // Main handler
 // --------------------
 async function handleEvent(event) {
-  // ✅ START TRIGGER FIX #1: handle follow/join events (no “hi hi hi” needed)
+  // START TRIGGER: follow/join
   if (event.type === 'follow' || event.type === 'join') {
     const userId = getUserId(event);
     if (!userId) return;
@@ -293,12 +334,10 @@ async function handleEvent(event) {
     return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
   }
 
-  if (event.type !== 'message' || event.message.type !== 'text') return;
-
   const userId = getUserId(event);
   if (!userId) return;
 
-  const userText = normalize(event.message.text);
+  const userText = getEventText(event);
   if (!userText) return;
 
   if (isReset(userText)) {
@@ -309,12 +348,61 @@ async function handleEvent(event) {
   const session = getSession(userId);
   touch(session);
 
-  // ✅ START TRIGGER FIX #2: “wake” into language chooser on any first text
+  // ✅ GLOBAL RICH MENU ROUTING (works from anywhere)
+  const cmd = classifyCommand(userText);
+  if (cmd) {
+    // If no language chosen yet, ask language first (rich menu can be tapped immediately)
+    if (session.step === STEPS.LANG && !session.data.lang) {
+      // If they tapped Thai/English it will be handled below; otherwise prompt language.
+      if (!/^english$/i.test(userText) && !/^ภาษาไทย$/i.test(userText)) {
+        return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
+      }
+    } else {
+      if (cmd === 'BOOK') {
+        session.data.path = 'book';
+        session.step = STEPS.INTENT;
+        return reply(event, makeText(t(session, 'welcome')), intentQuickReply(session));
+      }
+
+      if (cmd === 'FAQ') {
+        session.data.path = 'faq';
+        session.step = STEPS.FAQ;
+        return reply(event, makeText(t(session, 'faqTitle')), faqQuickReply(session));
+      }
+
+      if (cmd === 'FAQ_PRICES') {
+        const { answer, quick } = forceFaqAnswerKey(session, 'prices');
+        return reply(event, makeText(answer), quick);
+      }
+
+      if (cmd === 'FAQ_PROMO') {
+        const { answer, quick } = forceFaqAnswerKey(session, 'promo');
+        return reply(event, makeText(answer), quick);
+      }
+
+      if (cmd === 'FAQ_LOCATION') {
+        const { answer, quick } = forceFaqAnswerKey(session, 'location');
+        return reply(event, makeText(answer), quick);
+      }
+
+      if (cmd === 'STAFF') {
+        session.step = STEPS.CONTACT;
+        session.data.path = session.data.path || 'faq';
+        session.data.intent = 'Quick Question';
+        session.data.area = '-';
+        session.data.budget = '-';
+        session.data.day = '-';
+        session.data.timeWindow = '-';
+        session.data.timeExact = '-';
+        return reply(event, makeText(t(session, 'askContact')));
+      }
+    }
+  }
+
+  // “Wake” into language chooser on any first text
   if (session.step === STEPS.LANG) {
     const kick = /^(hi|hello|hey|start|test|สวัสดี|เริ่ม|เริ่มต้น)$/i.test(userText);
     if (kick || userText.length > 0) {
-      // If they already typed English/Thai, let it fall through below.
-      // Otherwise show language quick reply immediately.
       if (!/^english$/i.test(userText) && !/^ภาษาไทย$/i.test(userText)) {
         return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
       }
@@ -344,7 +432,7 @@ async function handleEvent(event) {
   if (session.step === STEPS.MENU) {
     const lang = session.data.lang || 'en';
 
-    const bookRegex = lang === 'th' ? /^จองคิว$/i : /^book an appointment$/i;
+    const bookRegex = lang === 'th' ? /^จองคิว$/i : /^book( an)? appointment$/i;
     const faqRegex = lang === 'th' ? /^คำถามด่วน$/i : /^quick questions$/i;
 
     if (bookRegex.test(userText)) {
@@ -368,7 +456,6 @@ async function handleEvent(event) {
   if (session.step === STEPS.FAQ) {
     const lang = session.data.lang || 'en';
 
-    // ✅ QUICK QUESTION LOOP FIX: allow exits
     const bookNowText = lang === 'th' ? T.th.faqBookNow : T.en.faqBookNow;
     const backMenuText = lang === 'th' ? T.th.faqBackMenu : T.en.faqBackMenu;
 
@@ -383,25 +470,36 @@ async function handleEvent(event) {
       return reply(event, makeText(t(session, 'welcome')), intentQuickReply(session));
     }
 
+    // Accept both long and short labels here too
     const map = lang === 'th'
       ? {
           [T.th.faqLocation]: 'location',
+          ['สาขา']: 'location',
           [T.th.faqPrices]: 'prices',
+          ['ราคา']: 'prices',
           [T.th.faqPromo]: 'promo',
+          ['โปรโมชั่น']: 'promo',
           [T.th.faqDoctor]: 'doctor',
           [T.th.faqAftercare]: 'aftercare',
           [T.th.faqTalkHuman]: 'talkHuman',
         }
       : {
           [T.en.faqLocation]: 'location',
+          ['Locations']: 'location',
+          ['Location']: 'location',
           [T.en.faqPrices]: 'prices',
+          ['Prices']: 'prices',
+          ['Price']: 'prices',
           [T.en.faqPromo]: 'promo',
+          ['Promo']: 'promo',
+          ['Promotion']: 'promo',
           [T.en.faqDoctor]: 'doctor',
           [T.en.faqAftercare]: 'aftercare',
           [T.en.faqTalkHuman]: 'talkHuman',
         };
 
     const key = map[userText];
+
     if (!key) {
       return reply(event, makeText(t(session, 'needPick')), faqQuickReply(session));
     }
@@ -410,33 +508,22 @@ async function handleEvent(event) {
 
     if (key === 'talkHuman') {
       session.step = STEPS.CONTACT;
-
-      // Mark as contact-only lead (sheet consistency)
       session.data.intent = 'Quick Question';
       session.data.area = '-';
       session.data.budget = '-';
       session.data.day = '-';
       session.data.timeWindow = '-';
       session.data.timeExact = '-';
-
       return reply(event, makeText(t(session, 'askContact')));
     }
 
     const answer = (T[lang].faqAnswers[key] || T.en.faqAnswers[key] || 'Demo');
-
-    // Stay in FAQ but show exits too (no “infinite trap”)
-    return reply(
-      event,
-      makeText(answer),
-      faqQuickReply(session)
-    );
+    return reply(event, makeText(answer), faqQuickReply(session));
   }
 
   // --------------------
   // BOOKING FLOW
   // --------------------
-
-  // STEP: Intent
   if (session.step === STEPS.INTENT) {
     if (isOther(userText)) {
       session.step = STEPS.INTENT_OTHER;
@@ -454,7 +541,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askArea')), areaQuickReply(session));
   }
 
-  // STEP: Area
   if (session.step === STEPS.AREA) {
     if (isOther(userText)) {
       session.step = STEPS.AREA_OTHER;
@@ -472,7 +558,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askBudget')), budgetQuickReply(session));
   }
 
-  // STEP: Budget
   if (session.step === STEPS.BUDGET) {
     if (isOther(userText)) {
       session.step = STEPS.BUDGET_OTHER;
@@ -490,7 +575,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askDay')), dayQuickReply(session));
   }
 
-  // STEP: Day
   if (session.step === STEPS.DAY) {
     if (isOther(userText)) {
       session.step = STEPS.DAY_OTHER;
@@ -508,7 +592,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askTimeOfDay')), timeOfDayQuickReply(session));
   }
 
-  // STEP: Time of day
   if (session.step === STEPS.TIME_OF_DAY) {
     session.data.timeWindow = userText;
 
@@ -528,7 +611,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askContact')));
   }
 
-  // STEP: Contact
   if (session.step === STEPS.CONTACT) {
     const parts = userText.split(',').map((p) => p.trim()).filter(Boolean);
     if (parts.length < 2) {
@@ -559,12 +641,10 @@ async function handleEvent(event) {
     return reply(event, makeText(summary), confirmQuickReply(session));
   }
 
-  // STEP: Confirm
   if (session.step === STEPS.CONFIRM) {
     if (/^yes$|^ยืนยัน$/i.test(userText)) {
       const ts = bangkokTimes();
 
-      // ✅ SHEET CONSISTENCY FIX: send flat strings only
       const lead = {
         ts_iso: ts.iso,
         ts_bkk: ts.bangkok,
@@ -578,7 +658,6 @@ async function handleEvent(event) {
         timeWindow: session.data.timeWindow || '-',
         timeExact: session.data.timeExact || '-',
 
-        // for your existing columns (timing/slot)
         timing: session.data.day || '-',
         slot: session.data.timeExact || session.data.timeWindow || '-',
 
@@ -602,7 +681,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'needPick')), confirmQuickReply(session));
   }
 
-  // DONE
   if (session.step === STEPS.DONE) {
     return reply(event, makeText("Type RESET to start a new booking."));
   }
@@ -738,8 +816,6 @@ function timeOfDayQuickReply(session) {
 
 function faqQuickReply(session) {
   const lang = session.data.lang || 'en';
-
-  // ✅ add “Book appointment” + “Back to menu” so user can exit FAQ
   if (lang === 'th') {
     return makeQuickReply([
       { label: T.th.faqLocation, text: T.th.faqLocation },
