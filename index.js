@@ -75,6 +75,7 @@ const T = {
     askArea: 'Which area?',
     askOtherArea: 'Please type the area you want (e.g., cheeks, nose, under-eye, full face).',
 
+    // ✅ fixed (removed stray character)
     askBudget: 'What is your budget range?',
     askOtherBudget: 'Please type your budget (e.g., 12,000 THB or “under 20k”).',
 
@@ -100,6 +101,10 @@ const T = {
     faqDoctor: 'Doctor & safety',
     faqAftercare: 'Aftercare',
     faqTalkHuman: 'Talk to staff',
+
+    // ✅ exit options to avoid “loop trap”
+    faqBookNow: 'Book appointment',
+    faqBackMenu: 'Back to menu',
 
     faqAnswers: {
       location: 'Demo answer: We can operate for clinics in Bangkok. Share your branch address and we’ll customize.',
@@ -149,6 +154,10 @@ const T = {
     faqAftercare: 'การดูแลหลังทำ',
     faqTalkHuman: 'คุยกับพนักงาน',
 
+    // ✅ exit options
+    faqBookNow: 'จองคิวเลย',
+    faqBackMenu: 'กลับเมนู',
+
     faqAnswers: {
       location: 'คำตอบเดโม: สามารถทำได้สำหรับคลินิกในกรุงเทพฯ ส่งที่อยู่สาขาแล้วเราจะปรับให้เข้ากับคุณ',
       prices: 'คำตอบเดโม: ราคาขึ้นกับตัวยา/บริเวณ/จำนวนยูนิต บอกบริการ+บริเวณ แล้วจะประเมินช่วงราคาให้',
@@ -180,7 +189,6 @@ function getSession(userId) {
     step: STEPS.LANG,
     data: {
       lang: null,
-      // booking fields:
       intent: null,
       area: null,
       budget: null,
@@ -189,8 +197,8 @@ function getSession(userId) {
       timeExact: null,
       name: null,
       phone: null,
-      // meta
       path: null, // 'book' or 'faq'
+      faqLastKey: null,
     },
     updatedAt: Date.now(),
   };
@@ -202,7 +210,7 @@ function getSession(userId) {
 function resetSession(userId) {
   sessions.set(userId, {
     step: STEPS.LANG,
-    data: { lang: null, path: null },
+    data: { lang: null, path: null, faqLastKey: null },
     updatedAt: Date.now(),
   });
 }
@@ -242,8 +250,7 @@ function isOther(text) {
   return /^other$/i.test(text) || /^อื่น/i.test(text);
 }
 
-function bangkokISO() {
-  // human-readable Bangkok time plus ISO for sorting
+function bangkokTimes() {
   const now = new Date();
   const bkk = now.toLocaleString('en-GB', { timeZone: 'Asia/Bangkok' });
   return { iso: now.toISOString(), bangkok: bkk };
@@ -278,6 +285,14 @@ async function sendLeadToSheet(lead) {
 // Main handler
 // --------------------
 async function handleEvent(event) {
+  // ✅ START TRIGGER FIX #1: handle follow/join events (no “hi hi hi” needed)
+  if (event.type === 'follow' || event.type === 'join') {
+    const userId = getUserId(event);
+    if (!userId) return;
+    resetSession(userId);
+    return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
+  }
+
   if (event.type !== 'message' || event.message.type !== 'text') return;
 
   const userId = getUserId(event);
@@ -288,12 +303,23 @@ async function handleEvent(event) {
 
   if (isReset(userText)) {
     resetSession(userId);
-    const s = getSession(userId);
     return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
   }
 
   const session = getSession(userId);
   touch(session);
+
+  // ✅ START TRIGGER FIX #2: “wake” into language chooser on any first text
+  if (session.step === STEPS.LANG) {
+    const kick = /^(hi|hello|hey|start|test|สวัสดี|เริ่ม|เริ่มต้น)$/i.test(userText);
+    if (kick || userText.length > 0) {
+      // If they already typed English/Thai, let it fall through below.
+      // Otherwise show language quick reply immediately.
+      if (!/^english$/i.test(userText) && !/^ภาษาไทย$/i.test(userText)) {
+        return reply(event, makeText("Please choose your language / กรุณาเลือกภาษา"), langQuickReply());
+      }
+    }
+  }
 
   // --------------------
   // STEP: Language
@@ -342,7 +368,21 @@ async function handleEvent(event) {
   if (session.step === STEPS.FAQ) {
     const lang = session.data.lang || 'en';
 
-    // If user types anything else, still allow
+    // ✅ QUICK QUESTION LOOP FIX: allow exits
+    const bookNowText = lang === 'th' ? T.th.faqBookNow : T.en.faqBookNow;
+    const backMenuText = lang === 'th' ? T.th.faqBackMenu : T.en.faqBackMenu;
+
+    if (userText === backMenuText) {
+      session.step = STEPS.MENU;
+      return reply(event, makeText(t(session, 'menuTitle')), menuQuickReply(session));
+    }
+
+    if (userText === bookNowText) {
+      session.data.path = 'book';
+      session.step = STEPS.INTENT;
+      return reply(event, makeText(t(session, 'welcome')), intentQuickReply(session));
+    }
+
     const map = lang === 'th'
       ? {
           [T.th.faqLocation]: 'location',
@@ -362,25 +402,34 @@ async function handleEvent(event) {
         };
 
     const key = map[userText];
-
     if (!key) {
       return reply(event, makeText(t(session, 'needPick')), faqQuickReply(session));
     }
 
+    session.data.faqLastKey = key;
+
     if (key === 'talkHuman') {
       session.step = STEPS.CONTACT;
-      // mark that this is a contact-only flow
-      session.data.intent = session.data.intent || 'Quick Question';
-      session.data.area = session.data.area || '-';
-      session.data.budget = session.data.budget || '-';
-      session.data.day = session.data.day || '-';
-      session.data.timeExact = session.data.timeExact || '-';
+
+      // Mark as contact-only lead (sheet consistency)
+      session.data.intent = 'Quick Question';
+      session.data.area = '-';
+      session.data.budget = '-';
+      session.data.day = '-';
+      session.data.timeWindow = '-';
+      session.data.timeExact = '-';
+
       return reply(event, makeText(t(session, 'askContact')));
     }
 
     const answer = (T[lang].faqAnswers[key] || T.en.faqAnswers[key] || 'Demo');
-    // Keep user in FAQ so they can pick more
-    return reply(event, makeText(answer + "\n\n" + t(session, 'faqTitle')), faqQuickReply(session));
+
+    // Stay in FAQ but show exits too (no “infinite trap”)
+    return reply(
+      event,
+      makeText(answer),
+      faqQuickReply(session)
+    );
   }
 
   // --------------------
@@ -399,7 +448,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askArea')), areaQuickReply(session));
   }
 
-  // STEP: Intent Other (free text)
   if (session.step === STEPS.INTENT_OTHER) {
     session.data.intent = userText;
     session.step = STEPS.AREA;
@@ -418,7 +466,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askBudget')), budgetQuickReply(session));
   }
 
-  // STEP: Area Other
   if (session.step === STEPS.AREA_OTHER) {
     session.data.area = userText;
     session.step = STEPS.BUDGET;
@@ -437,7 +484,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askDay')), dayQuickReply(session));
   }
 
-  // STEP: Budget Other
   if (session.step === STEPS.BUDGET_OTHER) {
     session.data.budget = userText;
     session.step = STEPS.DAY;
@@ -456,7 +502,6 @@ async function handleEvent(event) {
     return reply(event, makeText(t(session, 'askTimeOfDay')), timeOfDayQuickReply(session));
   }
 
-  // STEP: Day Other
   if (session.step === STEPS.DAY_OTHER) {
     session.data.day = userText;
     session.step = STEPS.TIME_OF_DAY;
@@ -472,13 +517,11 @@ async function handleEvent(event) {
       return reply(event, makeText(t(session, 'askExactTime')));
     }
 
-    // Set a default "exact" time window label
     session.data.timeExact = userText;
     session.step = STEPS.CONTACT;
     return reply(event, makeText(t(session, 'askContact')));
   }
 
-  // STEP: Exact time
   if (session.step === STEPS.TIME_EXACT) {
     session.data.timeExact = userText;
     session.step = STEPS.CONTACT;
@@ -519,23 +562,32 @@ async function handleEvent(event) {
   // STEP: Confirm
   if (session.step === STEPS.CONFIRM) {
     if (/^yes$|^ยืนยัน$/i.test(userText)) {
-      const ts = bangkokISO();
+      const ts = bangkokTimes();
+
+      // ✅ SHEET CONSISTENCY FIX: send flat strings only
       const lead = {
-        ts,
+        ts_iso: ts.iso,
+        ts_bkk: ts.bangkok,
+
         userId,
-  user_id: userId,        
-  intent: session.data.intent,
-  area: session.data.area,
-  budget: session.data.budget,
-  timing: session.data.day || session.data.timing || '-',
-  slot: session.data.timeExact || session.data.timeWindow || session.data.slot || '-',
-  day: session.data.day,
-  timeWindow: session.data.timeWindow,
-  timeExact: session.data.timeExact,
-  name: session.data.name,
-  phone: session.data.phone,
-  source: 'line',
-};      
+        intent: session.data.intent || '-',
+        area: session.data.area || '-',
+        budget: session.data.budget || '-',
+
+        day: session.data.day || '-',
+        timeWindow: session.data.timeWindow || '-',
+        timeExact: session.data.timeExact || '-',
+
+        // for your existing columns (timing/slot)
+        timing: session.data.day || '-',
+        slot: session.data.timeExact || session.data.timeWindow || '-',
+
+        name: session.data.name || '-',
+        phone: session.data.phone || '-',
+
+        path: session.data.path || '-',
+        source: 'line',
+      };
 
       await sendLeadToSheet(lead);
       session.step = STEPS.DONE;
@@ -582,7 +634,6 @@ function menuQuickReply(session) {
 
 function intentQuickReply(session) {
   const lang = session.data.lang || 'en';
-  // Thailand-popular aesthetic services (broad but not insane)
   const items = [
     { en: 'Botox', th: 'โบท็อกซ์' },
     { en: 'Filler', th: 'ฟิลเลอร์' },
@@ -600,7 +651,7 @@ function intentQuickReply(session) {
   return makeQuickReply(
     items.map((x) => ({
       label: lang === 'th' ? x.th : x.en,
-      text: x.en === 'Other' ? 'Other' : (lang === 'th' ? x.en : x.en),
+      text: x.en === 'Other' ? 'Other' : x.en,
     }))
   );
 }
@@ -669,7 +720,6 @@ function dayQuickReply(session) {
 
 function timeOfDayQuickReply(session) {
   const lang = session.data.lang || 'en';
-  // 4 blocks (better than 3; still simple)
   const items = [
     { en: 'Morning (10–12)', th: 'เช้า (10–12)' },
     { en: 'Afternoon (12–15)', th: 'บ่าย (12–15)' },
@@ -688,6 +738,8 @@ function timeOfDayQuickReply(session) {
 
 function faqQuickReply(session) {
   const lang = session.data.lang || 'en';
+
+  // ✅ add “Book appointment” + “Back to menu” so user can exit FAQ
   if (lang === 'th') {
     return makeQuickReply([
       { label: T.th.faqLocation, text: T.th.faqLocation },
@@ -696,8 +748,11 @@ function faqQuickReply(session) {
       { label: T.th.faqDoctor, text: T.th.faqDoctor },
       { label: T.th.faqAftercare, text: T.th.faqAftercare },
       { label: T.th.faqTalkHuman, text: T.th.faqTalkHuman },
+      { label: T.th.faqBookNow, text: T.th.faqBookNow },
+      { label: T.th.faqBackMenu, text: T.th.faqBackMenu },
     ]);
   }
+
   return makeQuickReply([
     { label: T.en.faqLocation, text: T.en.faqLocation },
     { label: T.en.faqPrices, text: T.en.faqPrices },
@@ -705,6 +760,8 @@ function faqQuickReply(session) {
     { label: T.en.faqDoctor, text: T.en.faqDoctor },
     { label: T.en.faqAftercare, text: T.en.faqAftercare },
     { label: T.en.faqTalkHuman, text: T.en.faqTalkHuman },
+    { label: T.en.faqBookNow, text: T.en.faqBookNow },
+    { label: T.en.faqBackMenu, text: T.en.faqBackMenu },
   ]);
 }
 
