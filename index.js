@@ -75,6 +75,9 @@ function getSession(userId) {
 
       // misc
       lastTile: null,
+
+      // ✅ Step 2: welcome sent once
+      welcomed: false,
     },
     updatedAt: Date.now(),
   };
@@ -94,6 +97,9 @@ function resetSession(userId) {
       name: null,
       phone: null,
       lastTile: null,
+
+      // ✅ Step 2: reset welcome state
+      welcomed: false,
     },
     updatedAt: Date.now(),
   });
@@ -124,12 +130,17 @@ function makeQuickReply(items) {
   };
 }
 
-async function reply(event, message, quickReply = null) {
-  const m = quickReply ? { ...message, quickReply } : message;
+// ✅ Reply helper supports multiple messages (needed for welcome + tile reply)
+async function reply(event, messages) {
   return client.replyMessage({
     replyToken: event.replyToken,
-    messages: [m],
+    messages,
   });
+}
+
+async function replyOne(event, message, quickReply = null) {
+  const m = quickReply ? { ...message, quickReply } : message;
+  return reply(event, [m]);
 }
 
 // --------------------
@@ -184,12 +195,23 @@ function validatePhone(text) {
 }
 
 // --------------------
-// Demo content (editable)
+// ✅ Step 1: Welcome message (your “9” vibe)
 // --------------------
-const WELCOME =
+const WELCOME_MESSAGE =
   "Welcome to Beauty Clinics ✨\n" +
   "We’re here to make your beauty journey easy — from booking treatments to finding the right clinic for you.\n" +
   "Tap a menu tile below to get started.";
+
+// ✅ Step 2: attach welcome once, even if follow didn’t fire
+function maybeWelcomeMessages(session) {
+  if (session.data.welcomed) return [];
+  session.data.welcomed = true;
+  return [makeText(WELCOME_MESSAGE)];
+}
+
+// --------------------
+// Demo content (editable)
+// --------------------
 const FAQ_ANSWER = {
   prices:
     "Typical prices (demo):\n" +
@@ -205,16 +227,12 @@ const FAQ_ANSWER = {
 
 const BRANCHES = {
   bangkok: [
-    { name: "สุขุมวิท (Sukhumvit)", maps: "https://maps.google.com/?q=Sukhumvit+Bangkok" },
-    { name: "ทองหล่อ (Thonglor)", maps: "https://maps.google.com/?q=Thonglor+Bangkok" },
-    { name: "สยาม (Siam)", maps: "https://maps.google.com/?q=Siam+Bangkok" },
+    { name: "Sukhumvit", maps: "https://maps.google.com/?q=Sukhumvit+Bangkok" },
+    { name: "Thonglor", maps: "https://maps.google.com/?q=Thonglor+Bangkok" },
+    { name: "Siam", maps: "https://maps.google.com/?q=Siam+Bangkok" },
   ],
-  phuket: [
-    { name: "Phuket – Central", maps: "https://maps.google.com/?q=Central+Phuket" },
-  ],
-  samui: [
-    { name: "Samui – Chaweng", maps: "https://maps.google.com/?q=Chaweng+Koh+Samui" },
-  ],
+  phuket: [{ name: "Phuket – Central", maps: "https://maps.google.com/?q=Central+Phuket" }],
+  samui: [{ name: "Samui – Chaweng", maps: "https://maps.google.com/?q=Chaweng+Koh+Samui" }],
 };
 
 // --------------------
@@ -355,12 +373,16 @@ async function handleEvent(event) {
   const userId = getUserId(event);
   if (!userId) return;
 
-  // follow/join = welcome once, NO quick replies (tiles only)
+  const session = getSession(userId);
+  touch(session);
+
+  // ✅ Step 2: follow/join = welcome once (no quick replies)
   if (event.type === "follow" || event.type === "join") {
     resetSession(userId);
     const s = getSession(userId);
     s.step = STEPS.IDLE;
-    return reply(event, makeText(WELCOME));
+    s.data.welcomed = true;
+    return replyOne(event, makeText(WELCOME_MESSAGE));
   }
 
   const textRaw = getEventText(event);
@@ -368,16 +390,16 @@ async function handleEvent(event) {
 
   if (isReset(textRaw)) {
     resetSession(userId);
-    return reply(event, makeText("Reset ✅ Use the menu tiles below."));
+    // keep it tiles-only: no quick replies
+    const s = getSession(userId);
+    s.data.welcomed = true; // don't re-welcome on reset
+    return replyOne(event, makeText("Reset ✅ Use the menu tiles below."));
   }
-
-  const session = getSession(userId);
-  touch(session);
 
   // "Back to menu" always returns to tiles-only idle
   if (/^back to menu$/i.test(textRaw)) {
     session.step = STEPS.IDLE;
-    return reply(event, makeText("OK ✅ Use the menu tiles below."));
+    return replyOne(event, makeText("OK ✅ Use the menu tiles below."));
   }
 
   // 1) Handle tile postbacks (or tile text) globally from anywhere
@@ -385,88 +407,92 @@ async function handleEvent(event) {
   if (action) {
     session.data.lastTile = action;
 
+    // ✅ prepend welcome once if needed
+    const welcomeMsgs = maybeWelcomeMessages(session);
+
     // IMPORTANT: Each tile sets the correct step and replies with ONLY relevant pills.
     if (action === "book") {
       session.step = STEPS.BOOK_SERVICE;
-      return reply(
-        event,
-        makeText("Booking — step 1/5\nWhat service do you want?"),
-        qrBookingService()
-      );
+      const m = { ...makeText("Booking — step 1/5\nWhat service do you want?"), quickReply: qrBookingService() };
+      return reply(event, [...welcomeMsgs, m]);
     }
 
     if (action === "faq") {
       session.step = STEPS.FAQ_MENU;
-      return reply(event, makeText("Quick questions — choose one:"), qrFaqMenu());
+      const m = { ...makeText("Quick questions — choose one:"), quickReply: qrFaqMenu() };
+      return reply(event, [...welcomeMsgs, m]);
     }
 
     if (action === "prices") {
       session.step = STEPS.IDLE; // one-and-done
-      return reply(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
+      const m = { ...makeText(FAQ_ANSWER.prices), quickReply: qrAfterInfo() };
+      return reply(event, [...welcomeMsgs, m]);
     }
 
     if (action === "promo") {
       session.step = STEPS.IDLE; // one-and-done
-      return reply(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
+      const m = { ...makeText(FAQ_ANSWER.promo), quickReply: qrAfterInfo() };
+      return reply(event, [...welcomeMsgs, m]);
     }
 
     if (action === "location") {
       session.step = STEPS.IDLE; // until they choose city / other
-      return reply(
-        event,
-        makeText("Locations — choose a city:"),
-        qrLocationCities()
-      );
+      const m = { ...makeText("Locations — choose a city:"), quickReply: qrLocationCities() };
+      return reply(event, [...welcomeMsgs, m]);
     }
 
     if (action === "staff") {
-      // direct to contact capture
       session.step = STEPS.BOOK_CONTACT;
-      // mark booking fields if they came from staff tile
       if (!session.data.service) session.data.service = "Talk to staff";
       if (!session.data.area) session.data.area = "-";
       if (!session.data.budget) session.data.budget = "-";
       if (!session.data.day) session.data.day = "-";
       if (!session.data.time) session.data.time = "-";
 
-      return reply(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+      const m = makeText("Please send: Name, Phone (example: N, 0812345678)");
+      return reply(event, [...welcomeMsgs, m]);
     }
+  }
+
+  // ✅ If user types first (no tile), welcome once and then keep it tiles-only
+  if (!session.data.welcomed) {
+    session.data.welcomed = true;
+    return replyOne(event, makeText(WELCOME_MESSAGE));
   }
 
   // 2) Location city handling (from quick replies)
   if (/^bangkok$|^phuket$|^samui$|^other$/i.test(textRaw)) {
     const t = textRaw.toLowerCase();
 
-    // Only treat as location selection if they recently opened location OR they're idle (harmless)
     if (t === "other") {
       session.step = STEPS.WAIT_LOCATION_TEXT;
-      return reply(event, makeText("Which city/area are you looking for? (Type it)"));
+      return replyOne(event, makeText("Which city/area are you looking for? (Type it)"));
     }
 
     const list = BRANCHES[t] || [];
     if (!list.length) {
       session.step = STEPS.WAIT_LOCATION_TEXT;
-      return reply(event, makeText("I don’t have that city yet. Type the city/area you want."));
+      return replyOne(event, makeText("I don’t have that city yet. Type the city/area you want."));
     }
 
     const lines = list
       .map((b, i) => `${i + 1}) ${b.name}\n${b.maps}`)
       .join("\n\n");
 
-    session.step = STEPS.IDLE; // back to tiles-only after showing branches
-    return reply(
+    session.step = STEPS.IDLE;
+    return replyOne(
       event,
       makeText(`Branches in ${textRaw} (demo):\n\n${lines}\n\nWant to book or talk to staff?`),
       qrAfterInfo()
     );
   }
 
-  // 3) WAITING_LOCATION_TEXT: capture next typed message (fixes your Phuket problem)
+  // 3) WAITING_LOCATION_TEXT: capture next typed message
   if (session.step === STEPS.WAIT_LOCATION_TEXT) {
     const city = normalize(textRaw);
     session.step = STEPS.IDLE;
 
-    return reply(
+    return replyOne(
       event,
       makeText(
         `Got it — ${city}.\n\n` +
@@ -483,15 +509,15 @@ async function handleEvent(event) {
   if (session.step === STEPS.FAQ_MENU) {
     if (/^typical prices$/i.test(textRaw) || /^prices$/i.test(textRaw)) {
       session.step = STEPS.IDLE;
-      return reply(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
+      return replyOne(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
     }
     if (/^promotions$/i.test(textRaw)) {
       session.step = STEPS.IDLE;
-      return reply(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
+      return replyOne(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
     }
     if (/^location\s*\/\s*branches$/i.test(textRaw) || /^location$/i.test(textRaw)) {
       session.step = STEPS.IDLE;
-      return reply(event, makeText("Locations — choose a city:"), qrLocationCities());
+      return replyOne(event, makeText("Locations — choose a city:"), qrLocationCities());
     }
     if (/^talk to staff$/i.test(textRaw)) {
       session.step = STEPS.BOOK_CONTACT;
@@ -500,71 +526,69 @@ async function handleEvent(event) {
       if (!session.data.budget) session.data.budget = "-";
       if (!session.data.day) session.data.day = "-";
       if (!session.data.time) session.data.time = "-";
-      return reply(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+      return replyOne(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
     }
 
-    return reply(event, makeText("Please choose one of the options below."), qrFaqMenu());
+    return replyOne(event, makeText("Please choose one of the options below."), qrFaqMenu());
   }
 
   // 5) Booking flow
   if (session.step === STEPS.BOOK_SERVICE) {
     if (/^other$/i.test(textRaw)) {
-      // ask for typed service
-      session.step = STEPS.BOOK_SERVICE; // stay here; next typed becomes service
-      return reply(event, makeText("Please type the service you want (e.g., HIFU / Pico laser / Thread lift)."));
+      session.step = STEPS.BOOK_SERVICE;
+      return replyOne(event, makeText("Please type the service you want (e.g., HIFU / Pico laser / Thread lift)."));
     }
 
     session.data.service = textRaw;
     session.step = STEPS.BOOK_AREA;
-    return reply(event, makeText("Booking — step 2/5\nWhich area?"), qrBookingArea());
+    return replyOne(event, makeText("Booking — step 2/5\nWhich area?"), qrBookingArea());
   }
 
   if (session.step === STEPS.BOOK_AREA) {
     if (/^other$/i.test(textRaw)) {
-      session.step = STEPS.BOOK_AREA; // stay; next typed becomes area
-      return reply(event, makeText("Please type the area you want (e.g., cheeks, under-eye, full face)."));
+      session.step = STEPS.BOOK_AREA;
+      return replyOne(event, makeText("Please type the area you want (e.g., cheeks, under-eye, full face)."));
     }
 
     session.data.area = textRaw;
     session.step = STEPS.BOOK_BUDGET;
-    return reply(event, makeText("Booking — step 3/5\nWhat is your budget range?"), qrBookingBudget());
+    return replyOne(event, makeText("Booking — step 3/5\nWhat is your budget range?"), qrBookingBudget());
   }
 
   if (session.step === STEPS.BOOK_BUDGET) {
     if (/^other$/i.test(textRaw)) {
-      session.step = STEPS.BOOK_BUDGET; // stay; next typed becomes budget
-      return reply(event, makeText("Please type your budget (e.g., 12,000 THB or “under 20k”)."));
+      session.step = STEPS.BOOK_BUDGET;
+      return replyOne(event, makeText("Please type your budget (e.g., 12,000 THB or “under 20k”)."));
     }
 
     session.data.budget = textRaw;
     session.step = STEPS.BOOK_DAY;
-    return reply(event, makeText("Booking — step 4/5\nWhich day would you like to come?"), qrBookingDay());
+    return replyOne(event, makeText("Booking — step 4/5\nWhich day would you like to come?"), qrBookingDay());
   }
 
   if (session.step === STEPS.BOOK_DAY) {
     if (/^other$/i.test(textRaw)) {
-      session.step = STEPS.BOOK_DAY; // stay; next typed becomes day
-      return reply(event, makeText("Please type your preferred day/date (e.g., “Friday” or “Mar 7”)."));
+      session.step = STEPS.BOOK_DAY;
+      return replyOne(event, makeText("Please type your preferred day/date (e.g., “Friday” or “Mar 7”)."));
     }
 
     session.data.day = textRaw;
     session.step = STEPS.BOOK_TIME;
-    return reply(event, makeText("Booking — step 5/5\nWhich time?"), qrBookingTime());
+    return replyOne(event, makeText("Booking — step 5/5\nWhich time?"), qrBookingTime());
   }
 
   if (session.step === STEPS.BOOK_TIME) {
     if (/^other$/i.test(textRaw)) {
-      session.step = STEPS.BOOK_TIME; // stay; next typed becomes time
-      return reply(event, makeText("Please type your preferred time (e.g., 3:30pm)."));
+      session.step = STEPS.BOOK_TIME;
+      return replyOne(event, makeText("Please type your preferred time (e.g., 3:30pm)."));
     }
 
     session.data.time = textRaw;
     session.step = STEPS.BOOK_CONTACT;
-    return reply(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+    return replyOne(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
   }
 
   if (session.step === STEPS.BOOK_CONTACT) {
-    // Accept both "Name, Phone" and "Name Phone"
     let name = null;
     let phone = null;
 
@@ -577,21 +601,16 @@ async function handleEvent(event) {
     } else {
       const maybePhone = validatePhone(textRaw);
       if (!maybePhone) {
-        // try "Name 081..." format
         const m = textRaw.match(/^(.+?)\s+(\+?\d[\d\s-]{7,})$/);
         if (m) {
           name = m[1].trim();
           phone = validatePhone(m[2]);
         }
-      } else {
-        // phone-only is not enough
-        name = null;
-        phone = maybePhone;
       }
     }
 
     if (!name || !phone) {
-      return reply(event, makeText("Phone number looks invalid. Please resend (example: N, 0812345678)."));
+      return replyOne(event, makeText("Phone number looks invalid. Please resend (example: N, 0812345678)."));
     }
 
     session.data.name = name;
@@ -609,7 +628,7 @@ async function handleEvent(event) {
       `• Phone: ${session.data.phone}\n\n` +
       `YES / EDIT`;
 
-    return reply(event, makeText(summary), qrConfirm());
+    return replyOne(event, makeText(summary), qrConfirm());
   }
 
   if (session.step === STEPS.BOOK_CONFIRM) {
@@ -629,13 +648,11 @@ async function handleEvent(event) {
 
       await sendLeadToSheet(lead);
 
-      // Go back to tiles-only
       session.step = STEPS.IDLE;
-      return reply(event, makeText("Booked (demo) ✅ Staff will contact you shortly."), qrAfterInfo());
+      return replyOne(event, makeText("Booked (demo) ✅ Staff will contact you shortly."), qrAfterInfo());
     }
 
     if (/^edit$/i.test(textRaw)) {
-      // restart booking but do NOT show menu pills
       session.data.service = null;
       session.data.area = null;
       session.data.budget = null;
@@ -645,15 +662,18 @@ async function handleEvent(event) {
       session.data.phone = null;
 
       session.step = STEPS.BOOK_SERVICE;
-      return reply(event, makeText("Booking — step 1/5\nWhat service do you want?"), qrBookingService());
+      return replyOne(event, makeText("Booking — step 1/5\nWhat service do you want?"), qrBookingService());
     }
 
-    return reply(event, makeText("Please choose YES or EDIT."), qrConfirm());
+    return replyOne(event, makeText("Please choose YES or EDIT."), qrConfirm());
   }
 
   // 6) IDLE: user typed something random — keep it simple (don’t spam pills)
   if (session.step === STEPS.IDLE) {
-    return reply(event, makeText("Use the menu tiles below to continue (Book / Prices / Promotions / Location / Talk to staff)."));
+    return replyOne(
+      event,
+      makeText("Use the menu tiles below to continue (Book / Prices / Promotions / Location / Talk to staff).")
+    );
   }
 }
 
@@ -673,28 +693,21 @@ function requireAdmin(req, res, next) {
 // Create + upload + set default rich menu
 app.get("/admin/create-rich-menu", requireAdmin, async (req, res) => {
   try {
-    // 2500x1686 (your tile image)
     const richMenu = {
       size: { width: 2500, height: 1686 },
       selected: true,
       name: "Beauty Clinic Menu",
       chatBarText: "Menu",
       areas: [
-        // Row 1 (3 tiles)
         { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: "postback", data: "action=book" } },
         { bounds: { x: 833, y: 0, width: 833, height: 843 }, action: { type: "postback", data: "action=faq" } },
         { bounds: { x: 1666, y: 0, width: 834, height: 843 }, action: { type: "postback", data: "action=prices" } },
-
-        // Row 2 (3 tiles)
         { bounds: { x: 0, y: 843, width: 833, height: 843 }, action: { type: "postback", data: "action=promo" } },
         { bounds: { x: 833, y: 843, width: 833, height: 843 }, action: { type: "postback", data: "action=location" } },
         { bounds: { x: 1666, y: 843, width: 834, height: 843 }, action: { type: "postback", data: "action=staff" } },
       ],
     };
 
-    // NOTE: SDK versions differ:
-    // - Some return string richMenuId
-    // - Some return { richMenuId }
     const created = await client.createRichMenu(richMenu);
     const richMenuId = typeof created === "string" ? created : created?.richMenuId;
 
@@ -705,10 +718,7 @@ app.get("/admin/create-rich-menu", requireAdmin, async (req, res) => {
 
     const img = fs.createReadStream(imgPath);
 
-    // setRichMenuImage signature also varies by SDK version.
-    // This form works in many Node SDK versions:
     await client.setRichMenuImage(richMenuId, img, "image/png");
-
     await client.setDefaultRichMenu(richMenuId);
 
     res.send(`✅ Rich menu created + default set. ID: ${richMenuId}`);
@@ -718,6 +728,5 @@ app.get("/admin/create-rich-menu", requireAdmin, async (req, res) => {
   }
 });
 
-// --------------------
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`LINE bot running on port ${port}`));
