@@ -1,10 +1,13 @@
 import "dotenv/config";
 import express from "express";
-import { middleware, messagingApi } from "@line/bot-sdk";
+import { middleware, Client } from "@line/bot-sdk";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
+// --------------------
+// ESM __dirname
+// --------------------
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -20,9 +23,8 @@ if (!config.channelAccessToken || !config.channelSecret) {
   console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
 }
 
-const client = new messagingApi.MessagingApiClient({
-  channelAccessToken: config.channelAccessToken,
-});
+// ✅ Use classic Client (includes Rich Menu methods)
+const client = new Client(config);
 
 const app = express();
 
@@ -37,7 +39,6 @@ const sessions = new Map();
 const STEPS = {
   IDLE: "idle",
 
-  // Booking flow
   BOOK_SERVICE: "book_service",
   BOOK_AREA: "book_area",
   BOOK_BUDGET: "book_budget",
@@ -46,10 +47,7 @@ const STEPS = {
   BOOK_CONTACT: "book_contact",
   BOOK_CONFIRM: "book_confirm",
 
-  // FAQ
   FAQ_MENU: "faq_menu",
-
-  // Special
   WAIT_LOCATION_TEXT: "wait_location_text",
 };
 
@@ -65,9 +63,7 @@ function getSession(userId) {
     step: STEPS.IDLE,
     data: {
       service: null,
-      // ✅ bulletproof: store service separately the moment it’s chosen
-      serviceChosen: null,
-
+      serviceChosen: null, // bulletproof service storage
       area: null,
       budget: null,
       day: null,
@@ -127,10 +123,7 @@ function makeQuickReply(items) {
 }
 
 async function reply(event, messages) {
-  return client.replyMessage({
-    replyToken: event.replyToken,
-    messages,
-  });
+  return client.replyMessage(event.replyToken, messages);
 }
 
 async function replyOne(event, message, quickReply = null) {
@@ -162,7 +155,6 @@ function parseAction(raw) {
   if (t === "promotions" || t === "promo") return "promo";
   if (t === "location / branches" || t === "location" || t === "branches") return "location";
   if (t === "talk to staff" || t === "staff") return "staff";
-
   return null;
 }
 
@@ -177,7 +169,7 @@ function validatePhone(text) {
 }
 
 // --------------------
-// Welcome (HealthDeliver style)
+// Welcome
 // --------------------
 const WELCOME_1 = "Welcome to Beauty Clinics ✨";
 const WELCOME_2 =
@@ -324,17 +316,14 @@ async function sendLeadToSheet(lead) {
     });
 
     const text = await r.text();
-    if (!r.ok) {
-      console.error("Apps Script error", r.status, text);
-      return;
-    }
+    if (!r.ok) console.error("Apps Script error", r.status, text);
   } catch (e) {
     console.error("Failed to send lead", e);
   }
 }
 
 // --------------------
-// Webhook
+// Webhook (IMPORTANT: do NOT add express.json() before this)
 // --------------------
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
@@ -364,13 +353,13 @@ async function handleEvent(event) {
     s.step = STEPS.IDLE;
     s.data.welcomed = true;
 
-    // Optional: link rich menu instantly (fix “tiles only after re-open”)
-    const richMenuId = process.env.DEFAULT_RICHMENU_ID;
+    // Link rich menu instantly if set
+    const richMenuId = (process.env.DEFAULT_RICHMENU_ID || "").trim();
     if (richMenuId) {
       try {
-        await client.linkRichMenuIdToUser(userId, richMenuId);
+        await client.linkRichMenuToUser(userId, richMenuId);
       } catch (e) {
-        console.error("Failed to link rich menu to user", e);
+        console.error("Failed to link rich menu to user", e?.message || e);
       }
     }
 
@@ -461,10 +450,8 @@ async function handleEvent(event) {
 
   // Booking flow
   if (session.step === STEPS.BOOK_SERVICE) {
-    // ✅ store it in both fields
     session.data.service = textRaw;
     session.data.serviceChosen = textRaw;
-
     session.step = STEPS.BOOK_AREA;
     return replyOne(event, makeText("Booking — step 2/5\nWhich area?"), qrBookingArea());
   }
@@ -524,12 +511,12 @@ async function handleEvent(event) {
 
   if (session.step === STEPS.BOOK_CONFIRM) {
     if (/^yes$/i.test(textRaw)) {
-      const serviceFinal = session.data.serviceChosen || session.data.service || "-";
+      const serviceFinal = String(session.data.serviceChosen || session.data.service || "-").trim() || "-";
 
       const lead = {
         ts_iso: new Date().toISOString(),
         userId,
-        service: serviceFinal, // ✅ this is what your sheet expects
+        service: serviceFinal, // ✅ always present
         area: session.data.area || "-",
         budget: session.data.budget || "-",
         day: session.data.day || "-",
@@ -562,7 +549,6 @@ async function handleEvent(event) {
     return replyOne(event, makeText("Please choose YES or EDIT."), qrConfirm());
   }
 
-  // Idle fallback
   return replyOne(event, makeText("Use the menu tiles below to continue."));
 }
 
@@ -570,8 +556,8 @@ async function handleEvent(event) {
 // Admin: Create Rich Menu
 // --------------------
 function requireAdmin(req, res, next) {
-  const adminKey = process.env.ADMIN_KEY;
-  const key = req.query.key || req.headers["x-admin-key"];
+  const adminKey = (process.env.ADMIN_KEY || "").trim();
+  const key = String(req.query.key || req.headers["x-admin-key"] || "").trim();
 
   if (!adminKey) return res.status(500).send("ADMIN_KEY missing on server");
   if (!key || key !== adminKey) return res.status(403).send("Forbidden");
@@ -595,22 +581,24 @@ app.get("/admin/create-rich-menu", requireAdmin, async (req, res) => {
       ],
     };
 
-    const created = await client.createRichMenu(richMenu);
-    const richMenuId = typeof created === "string" ? created : created?.richMenuId;
+    const richMenuId = await client.createRichMenu(richMenu);
     if (!richMenuId) throw new Error("createRichMenu did not return richMenuId");
 
     const imgPath = path.join(__dirname, "richmenu.png");
-    if (!fs.existsSync(imgPath)) throw new Error("richmenu.png not found");
+    if (!fs.existsSync(imgPath)) throw new Error("richmenu.png not found next to index.js");
 
     const img = fs.createReadStream(imgPath);
 
+    // ✅ These exist on classic Client
     await client.setRichMenuImage(richMenuId, img, "image/png");
     await client.setDefaultRichMenu(richMenuId);
 
-    res.send(`✅ Rich menu created + default set. ID: ${richMenuId}\nSet DEFAULT_RICHMENU_ID=${richMenuId} to show tiles instantly on follow.`);
+    res.send(
+      `✅ Rich menu created + default set.\nID: ${richMenuId}\n\nNow set Render env var:\nDEFAULT_RICHMENU_ID=${richMenuId}\n\nThen redeploy.`
+    );
   } catch (err) {
     console.error(err);
-    res.status(500).send("❌ Error: " + err.message);
+    res.status(500).send("❌ Error: " + (err?.message || String(err)));
   }
 });
 
