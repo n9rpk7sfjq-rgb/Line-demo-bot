@@ -474,19 +474,42 @@ async function handleEvent(event) {
 
     return replyOne(event, makeText(summary), qrConfirm());
   }
-
   if (session.step === STEPS.BOOK_CONFIRM) {
     if (/^yes$/i.test(textRaw)) {
+      const lead = {
+        ts_iso: new Date().toISOString(),
+        userId,
+        service: session.data.service || "-",
+        area: session.data.area || "-",
+        budget: session.data.budget || "-",
+        day: session.data.day || "-",
+        time: session.data.time || "-",
+        name: session.data.name || "-",
+        phone: session.data.phone || "-",
+        source: "line",
+      };
+
+      await sendLeadToSheet(lead);
+
       session.step = STEPS.IDLE;
       return replyOne(event, makeText("Booked (demo) ✅ Staff will contact you shortly."), qrAfterInfo());
     }
 
     if (/^edit$/i.test(textRaw)) {
+      session.data.service = null;
+      session.data.area = null;
+      session.data.budget = null;
+      session.data.day = null;
+      session.data.time = null;
+      session.data.name = null;
+      session.data.phone = null;
+
       session.step = STEPS.BOOK_SERVICE;
       return replyOne(event, makeText("Booking — step 1/5\nWhat service do you want?"), qrBookingService());
     }
-  }
 
+    return replyOne(event, makeText("Please choose YES or EDIT."), qrConfirm());
+  } 
   // Idle fallback
   return replyOne(event, makeText("Use the menu tiles below to continue."));
 }
