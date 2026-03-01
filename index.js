@@ -1,14 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
-import path from "path";
-import { fileURLToPath } from "url";
-
-// --------------------
-// ESM __dirname
-// --------------------
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // --------------------
 // Config
@@ -22,9 +14,7 @@ if (!config.channelAccessToken || !config.channelSecret) {
   console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
 }
 
-// ✅ Classic Client
 const client = new Client(config);
-
 const app = express();
 
 // Health check
@@ -37,7 +27,6 @@ const sessions = new Map();
 
 const STEPS = {
   IDLE: "idle",
-
   BOOK_SERVICE: "book_service",
   BOOK_AREA: "book_area",
   BOOK_BUDGET: "book_budget",
@@ -45,10 +34,13 @@ const STEPS = {
   BOOK_TIME: "book_time",
   BOOK_CONTACT: "book_contact",
   BOOK_CONFIRM: "book_confirm",
-
   FAQ_MENU: "faq_menu",
   WAIT_LOCATION_TEXT: "wait_location_text",
 };
+
+function normalize(s) {
+  return (s || "").trim();
+}
 
 function getUserId(event) {
   return event.source?.userId || null;
@@ -99,10 +91,6 @@ function resetSession(userId) {
 
 function touch(session) {
   session.updatedAt = Date.now();
-}
-
-function normalize(s) {
-  return (s || "").trim();
 }
 
 // --------------------
@@ -167,11 +155,11 @@ function validatePhone(text) {
   return digits;
 }
 
-// ✅ parse "name + phone" even without comma
+// parse "name + phone" even without comma
 function parseNameAndPhone(raw) {
   const text = normalize(raw);
 
-  // Find a phone-like chunk anywhere
+  // find a phone-like chunk
   const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
   if (!match) return null;
 
@@ -179,27 +167,22 @@ function parseNameAndPhone(raw) {
   const phone = validatePhone(phoneCandidate);
   if (!phone) return null;
 
-  // Everything except the phone becomes name
+  // remove phone from text -> name
   let name = text.replace(phoneCandidate, " ").trim();
   name = name.replace(/\s{2,}/g, " ");
   name = name.replace(/^[,;:\-–—]+/, "").replace(/[,;:\-–—]+$/, "").trim();
 
-  if (!name) return { name: null, phone };
-
-  return { name, phone };
+  return { name: name || null, phone };
 }
 
 // --------------------
-// Welcome
+// Content
 // --------------------
 const WELCOME_1 = "Welcome to Beauty Clinics ✨";
 const WELCOME_2 =
   "We’re here to make your beauty journey easy — from booking treatments to finding the right clinic for you.";
 const WELCOME_3 = "Tap a menu tile below to get started.";
 
-// --------------------
-// Demo content
-// --------------------
 const FAQ_ANSWER = {
   prices:
     "Typical prices (demo):\n" +
@@ -322,29 +305,45 @@ function qrConfirm() {
 // --------------------
 // Lead sender (Google Sheets)
 // --------------------
+async function getFetch() {
+  if (typeof fetch === "function") return fetch;
+  // Node < 18 fallback
+  const mod = await import("node-fetch");
+  return mod.default;
+}
+
 async function sendLeadToSheet(lead) {
-  const url = process.env.LEADS_API_URL;
+  const url = (process.env.LEADS_API_URL || "").trim();
   if (!url) {
     console.error("LEADS_API_URL missing");
     return;
   }
 
   try {
-    const r = await fetch(url, {
+    const _fetch = await getFetch();
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 6000);
+
+    const r = await _fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(lead),
+      signal: controller.signal,
     });
 
-    const text = await r.text();
-    if (!r.ok) console.error("Apps Script error", r.status, text);
+    clearTimeout(t);
+
+    const text = await r.text().catch(() => "");
+    if (!r.ok) console.error("Apps Script error:", r.status, text);
+    else console.log("Sheet write OK:", text || "(no body)");
   } catch (e) {
-    console.error("Failed to send lead", e);
+    console.error("Failed to send lead:", e?.message || e);
   }
 }
 
 // --------------------
-// Webhook (IMPORTANT: do NOT add express.json() before this)
+// Webhook (do NOT add express.json() before this)
 // --------------------
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
@@ -352,7 +351,7 @@ app.post("/webhook", middleware(config), async (req, res) => {
     await Promise.all(events.map(handleEvent));
     res.status(200).end();
   } catch (err) {
-    console.error(err);
+    console.error("Webhook error:", err?.message || err);
     res.status(500).end();
   }
 });
@@ -374,14 +373,11 @@ async function handleEvent(event) {
     s.step = STEPS.IDLE;
     s.data.welcomed = true;
 
-    // Link rich menu instantly if set
     const richMenuId = (process.env.DEFAULT_RICHMENU_ID || "").trim();
     if (richMenuId) {
-      try {
-        await client.linkRichMenuToUser(userId, richMenuId);
-      } catch (e) {
-        console.error("Failed to link rich menu to user", e?.message || e);
-      }
+      client.linkRichMenuToUser(userId, richMenuId).catch((e) => {
+        console.error("Failed to link rich menu:", e?.message || e);
+      });
     }
 
     return reply(event, [makeText(WELCOME_1), makeText(WELCOME_2), makeText(WELCOME_3)]);
@@ -439,7 +435,9 @@ async function handleEvent(event) {
       session.data.budget = "-";
       session.data.day = "-";
       session.data.time = "-";
-      return replyOne(event, makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678"));
+      session.data.name = null;
+      session.data.phone = null;
+      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
     }
   }
 
@@ -498,17 +496,18 @@ async function handleEvent(event) {
   if (session.step === STEPS.BOOK_TIME) {
     session.data.time = textRaw;
     session.step = STEPS.BOOK_CONTACT;
-    return replyOne(
-      event,
-makeText("Please send your name + phone. Example: N 0812345678")    );
+    session.data.name = null;
+    session.data.phone = null;
+    return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
   }
 
-  // ✅ FIXED: single BOOK_CONTACT handler (no duplicate logic)
+  // --------------------
+  // BOOK_CONTACT (single handler)
+  // --------------------
   if (session.step === STEPS.BOOK_CONTACT) {
-    // If we already have phone but missing name: treat this message as name-only
+    // If phone already stored but name missing => accept name-only
     if (session.data.phone && !session.data.name) {
       const nameOnly = normalize(textRaw);
-      // reject if it's still a phone-like message
       if (nameOnly && !/(\+?\d[\d\s().-]{6,}\d)/.test(nameOnly)) {
         session.data.name = nameOnly;
         session.step = STEPS.BOOK_CONFIRM;
@@ -525,21 +524,16 @@ makeText("Please send your name + phone. Example: N 0812345678")    );
 
         return replyOne(event, makeText(summary), qrConfirm());
       }
-
       return replyOne(event, makeText("Now send your name only (example: N)"));
     }
 
-    // Normal case: parse name+phone in one message
+    // Normal: parse name+phone
     const parsed = parseNameAndPhone(textRaw);
-
     if (!parsed) {
-      return replyOne(
-        event,
-        makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678")
-      );
+      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
     }
 
-    // Phone-only -> ask for name next
+    // phone-only -> ask for name next
     if (!parsed.name) {
       session.data.phone = parsed.phone;
       session.data.name = null;
@@ -548,7 +542,6 @@ makeText("Please send your name + phone. Example: N 0812345678")    );
 
     session.data.name = parsed.name;
     session.data.phone = parsed.phone;
-
     session.step = STEPS.BOOK_CONFIRM;
 
     const summary =
@@ -564,6 +557,9 @@ makeText("Please send your name + phone. Example: N 0812345678")    );
     return replyOne(event, makeText(summary), qrConfirm());
   }
 
+  // --------------------
+  // BOOK_CONFIRM
+  // --------------------
   if (session.step === STEPS.BOOK_CONFIRM) {
     if (/^yes$/i.test(textRaw)) {
       const serviceFinal = String(session.data.serviceChosen || session.data.service || "-").trim() || "-";
@@ -581,7 +577,8 @@ makeText("Please send your name + phone. Example: N 0812345678")    );
         source: "line",
       };
 
-      await sendLeadToSheet(lead);
+      // IMPORTANT: do NOT await (avoid webhook timeouts)
+      sendLeadToSheet(lead).catch((e) => console.error("Sheet error:", e?.message || e));
 
       session.step = STEPS.IDLE;
       return replyOne(event, makeText("Booked (demo) ✅ Staff will contact you shortly."), qrAfterInfo());
