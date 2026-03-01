@@ -1,7 +1,6 @@
 import "dotenv/config";
 import express from "express";
 import { middleware, Client } from "@line/bot-sdk";
-import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -23,7 +22,7 @@ if (!config.channelAccessToken || !config.channelSecret) {
   console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
 }
 
-// ✅ Use classic Client (includes Rich Menu methods)
+// ✅ Classic Client
 const client = new Client(config);
 
 const app = express();
@@ -166,6 +165,28 @@ function validatePhone(text) {
   const digits = (text || "").replace(/[^\d+]/g, "");
   if (digits.length < 8) return null;
   return digits;
+}
+
+// ✅ NEW: parse "name + phone" even without comma
+function parseNameAndPhone(raw) {
+  const text = normalize(raw);
+
+  // Find a phone-like chunk anywhere (supports +, spaces, -, (), dots)
+  const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
+  if (!match) return null;
+
+  const phoneCandidate = match[1];
+  const phone = validatePhone(phoneCandidate);
+  if (!phone) return null;
+
+  // Everything except the phone becomes name
+  let name = text.replace(phoneCandidate, " ").trim();
+  name = name.replace(/\s{2,}/g, " ");
+  name = name.replace(/^[,;:\-–—]+/, "").replace(/[,;:\-–—]+$/, "").trim();
+
+  if (!name) return { name: null, phone };
+
+  return { name, phone };
 }
 
 // --------------------
@@ -418,7 +439,7 @@ async function handleEvent(event) {
       session.data.budget = "-";
       session.data.day = "-";
       session.data.time = "-";
-      return replyOne(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
     }
   }
 
@@ -477,22 +498,31 @@ async function handleEvent(event) {
   if (session.step === STEPS.BOOK_TIME) {
     session.data.time = textRaw;
     session.step = STEPS.BOOK_CONTACT;
-    return replyOne(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+    return replyOne(
+      event,
+      makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678")
+    );
   }
 
+  // ✅ UPDATED: no comma required
   if (session.step === STEPS.BOOK_CONTACT) {
-    const parts = textRaw.split(",").map((p) => p.trim());
-    if (parts.length < 2) {
-      return replyOne(event, makeText("Please send: Name, Phone (example: N, 0812345678)"));
+    const parsed = parseNameAndPhone(textRaw);
+
+    if (!parsed) {
+      return replyOne(
+        event,
+        makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678")
+      );
     }
 
-    const phone = validatePhone(parts[1]);
-    if (!phone) {
-      return replyOne(event, makeText("Phone number looks invalid. Please resend (example: N, 0812345678)."));
+    // If user only sent phone, ask for name
+    if (!parsed.name) {
+      session.data.phone = parsed.phone;
+      return replyOne(event, makeText("Got your phone ✅ Now send your name only (example: N)"));
     }
 
-    session.data.name = parts[0];
-    session.data.phone = phone;
+    session.data.name = parsed.name;
+    session.data.phone = parsed.phone;
 
     session.step = STEPS.BOOK_CONFIRM;
 
@@ -509,6 +539,27 @@ async function handleEvent(event) {
     return replyOne(event, makeText(summary), qrConfirm());
   }
 
+  // If user previously sent phone-only, accept name-only next
+  if (session.step === STEPS.BOOK_CONTACT && session.data.phone && !session.data.name) {
+    const nameOnly = normalize(textRaw);
+    if (nameOnly && !/^\+?\d/.test(nameOnly)) {
+      session.data.name = nameOnly;
+      session.step = STEPS.BOOK_CONFIRM;
+
+      const summary =
+        `Please confirm:\n\n` +
+        `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
+        `• Area: ${session.data.area || "-"}\n` +
+        `• Budget: ${session.data.budget || "-"}\n` +
+        `• Day: ${session.data.day || "-"}\n` +
+        `• Time: ${session.data.time || "-"}\n` +
+        `• Name: ${session.data.name || "-"}\n` +
+        `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
+
+      return replyOne(event, makeText(summary), qrConfirm());
+    }
+  }
+
   if (session.step === STEPS.BOOK_CONFIRM) {
     if (/^yes$/i.test(textRaw)) {
       const serviceFinal = String(session.data.serviceChosen || session.data.service || "-").trim() || "-";
@@ -516,7 +567,7 @@ async function handleEvent(event) {
       const lead = {
         ts_iso: new Date().toISOString(),
         userId,
-        service: serviceFinal, // ✅ always present
+        service: serviceFinal,
         area: session.data.area || "-",
         budget: session.data.budget || "-",
         day: session.data.day || "-",
@@ -551,11 +602,6 @@ async function handleEvent(event) {
 
   return replyOne(event, makeText("Use the menu tiles below to continue."));
 }
-
-// --------------------
-// Admin: Create Rich Menu
-// --------------------
-
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`LINE bot running on port ${port}`));
