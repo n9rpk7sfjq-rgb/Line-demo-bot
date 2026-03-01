@@ -38,10 +38,6 @@ const STEPS = {
   WAIT_LOCATION_TEXT: "wait_location_text",
 };
 
-function normalize(s) {
-  return (s || "").trim();
-}
-
 function getUserId(event) {
   return event.source?.userId || null;
 }
@@ -91,6 +87,10 @@ function resetSession(userId) {
 
 function touch(session) {
   session.updatedAt = Date.now();
+}
+
+function normalize(s) {
+  return (s || "").trim();
 }
 
 // --------------------
@@ -155,11 +155,9 @@ function validatePhone(text) {
   return digits;
 }
 
-// parse "name + phone" even without comma
+// Parse "name + phone" with or without comma
 function parseNameAndPhone(raw) {
   const text = normalize(raw);
-
-  // find a phone-like chunk
   const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
   if (!match) return null;
 
@@ -167,12 +165,15 @@ function parseNameAndPhone(raw) {
   const phone = validatePhone(phoneCandidate);
   if (!phone) return null;
 
-  // remove phone from text -> name
   let name = text.replace(phoneCandidate, " ").trim();
   name = name.replace(/\s{2,}/g, " ");
   name = name.replace(/^[,;:\-–—]+/, "").replace(/[,;:\-–—]+$/, "").trim();
 
   return { name: name || null, phone };
+}
+
+function looksLikePhoneMessage(text) {
+  return /(\+?\d[\d\s().-]{6,}\d)/.test(text || "");
 }
 
 // --------------------
@@ -303,11 +304,10 @@ function qrConfirm() {
 }
 
 // --------------------
-// Lead sender (Google Sheets)
+// Lead sender (Google Sheets) - hardened
 // --------------------
 async function getFetch() {
   if (typeof fetch === "function") return fetch;
-  // Node < 18 fallback
   const mod = await import("node-fetch");
   return mod.default;
 }
@@ -316,34 +316,34 @@ async function sendLeadToSheet(lead) {
   const url = (process.env.LEADS_API_URL || "").trim();
   if (!url) {
     console.error("LEADS_API_URL missing");
-    return;
+    return false;
   }
 
   try {
     const _fetch = await getFetch();
 
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), 6000);
+    console.log("LEAD ->", JSON.stringify(lead));
+    console.log("POST ->", url);
 
     const r = await _fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(lead),
-      signal: controller.signal,
     });
 
-    clearTimeout(t);
+    const text = await r.text();
+    console.log("SHEETS STATUS:", r.status);
+    console.log("SHEETS BODY:", text);
 
-    const text = await r.text().catch(() => "");
-    if (!r.ok) console.error("Apps Script error:", r.status, text);
-    else console.log("Sheet write OK:", text || "(no body)");
+    return r.ok;
   } catch (e) {
-    console.error("Failed to send lead:", e?.message || e);
+    console.error("Failed to send lead", e);
+    return false;
   }
 }
 
 // --------------------
-// Webhook (do NOT add express.json() before this)
+// Webhook
 // --------------------
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
@@ -351,7 +351,7 @@ app.post("/webhook", middleware(config), async (req, res) => {
     await Promise.all(events.map(handleEvent));
     res.status(200).end();
   } catch (err) {
-    console.error("Webhook error:", err?.message || err);
+    console.error(err);
     res.status(500).end();
   }
 });
@@ -366,7 +366,6 @@ async function handleEvent(event) {
   const session = getSession(userId);
   touch(session);
 
-  // Welcome ONLY on follow/join
   if (event.type === "follow" || event.type === "join") {
     resetSession(userId);
     const s = getSession(userId);
@@ -375,9 +374,11 @@ async function handleEvent(event) {
 
     const richMenuId = (process.env.DEFAULT_RICHMENU_ID || "").trim();
     if (richMenuId) {
-      client.linkRichMenuToUser(userId, richMenuId).catch((e) => {
-        console.error("Failed to link rich menu:", e?.message || e);
-      });
+      try {
+        await client.linkRichMenuToUser(userId, richMenuId);
+      } catch (e) {
+        console.error("Failed to link rich menu to user", e?.message || e);
+      }
     }
 
     return reply(event, [makeText(WELCOME_1), makeText(WELCOME_2), makeText(WELCOME_3)]);
@@ -437,7 +438,7 @@ async function handleEvent(event) {
       session.data.time = "-";
       session.data.name = null;
       session.data.phone = null;
-      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
+      return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
     }
   }
 
@@ -505,35 +506,36 @@ async function handleEvent(event) {
   // BOOK_CONTACT (single handler)
   // --------------------
   if (session.step === STEPS.BOOK_CONTACT) {
-    // If phone already stored but name missing => accept name-only
+    // If we already captured phone only, this message should be name-only
     if (session.data.phone && !session.data.name) {
       const nameOnly = normalize(textRaw);
-      if (nameOnly && !/(\+?\d[\d\s().-]{6,}\d)/.test(nameOnly)) {
-        session.data.name = nameOnly;
-        session.step = STEPS.BOOK_CONFIRM;
-
-        const summary =
-          `Please confirm:\n\n` +
-          `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
-          `• Area: ${session.data.area || "-"}\n` +
-          `• Budget: ${session.data.budget || "-"}\n` +
-          `• Day: ${session.data.day || "-"}\n` +
-          `• Time: ${session.data.time || "-"}\n` +
-          `• Name: ${session.data.name || "-"}\n` +
-          `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
-
-        return replyOne(event, makeText(summary), qrConfirm());
+      if (!nameOnly || looksLikePhoneMessage(nameOnly)) {
+        return replyOne(event, makeText("Now send your name only (example: N)"));
       }
-      return replyOne(event, makeText("Now send your name only (example: N)"));
+
+      session.data.name = nameOnly;
+      session.step = STEPS.BOOK_CONFIRM;
+
+      const summary =
+        `Please confirm:\n\n` +
+        `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
+        `• Area: ${session.data.area || "-"}\n` +
+        `• Budget: ${session.data.budget || "-"}\n` +
+        `• Day: ${session.data.day || "-"}\n` +
+        `• Time: ${session.data.time || "-"}\n` +
+        `• Name: ${session.data.name || "-"}\n` +
+        `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
+
+      return replyOne(event, makeText(summary), qrConfirm());
     }
 
-    // Normal: parse name+phone
+    // Normal parse (name + phone in one line)
     const parsed = parseNameAndPhone(textRaw);
     if (!parsed) {
-      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
+      return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
     }
 
-    // phone-only -> ask for name next
+    // Phone only -> ask for name next
     if (!parsed.name) {
       session.data.phone = parsed.phone;
       session.data.name = null;
@@ -562,12 +564,10 @@ async function handleEvent(event) {
   // --------------------
   if (session.step === STEPS.BOOK_CONFIRM) {
     if (/^yes$/i.test(textRaw)) {
-      const serviceFinal = String(session.data.serviceChosen || session.data.service || "-").trim() || "-";
-
       const lead = {
         ts_iso: new Date().toISOString(),
         userId,
-        service: serviceFinal,
+        service: String(session.data.serviceChosen || session.data.service || "-").trim() || "-",
         area: session.data.area || "-",
         budget: session.data.budget || "-",
         day: session.data.day || "-",
@@ -577,11 +577,14 @@ async function handleEvent(event) {
         source: "line",
       };
 
-      // IMPORTANT: do NOT await (avoid webhook timeouts)
-      sendLeadToSheet(lead).catch((e) => console.error("Sheet error:", e?.message || e));
+      const ok = await sendLeadToSheet(lead);
 
       session.step = STEPS.IDLE;
-      return replyOne(event, makeText("Booked (demo) ✅ Staff will contact you shortly."), qrAfterInfo());
+      return replyOne(
+        event,
+        makeText(ok ? "Booked (demo) ✅ Staff will contact you shortly." : "Booked ✅ (but sheet write FAILED — check logs)"),
+        qrAfterInfo()
+      );
     }
 
     if (/^edit$/i.test(textRaw)) {
