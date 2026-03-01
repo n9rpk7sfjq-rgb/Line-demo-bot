@@ -555,52 +555,7 @@ async function handleEvent(event) {
 // --------------------
 // Admin: Create Rich Menu
 // --------------------
-function requireAdmin(req, res, next) {
-  const adminKey = (process.env.ADMIN_KEY || "").trim();
-  const key = String(req.query.key || req.headers["x-admin-key"] || "").trim();
 
-  if (!adminKey) return res.status(500).send("ADMIN_KEY missing on server");
-  if (!key || key !== adminKey) return res.status(403).send("Forbidden");
-  next();
-}
-
-app.get("/admin/create-rich-menu", requireAdmin, async (req, res) => {
-  try {
-    const richMenu = {
-      size: { width: 2500, height: 1686 },
-      selected: true,
-      name: "Beauty Clinic Menu",
-      chatBarText: "Menu",
-      areas: [
-        { bounds: { x: 0, y: 0, width: 833, height: 843 }, action: { type: "postback", data: "action=book" } },
-        { bounds: { x: 833, y: 0, width: 833, height: 843 }, action: { type: "postback", data: "action=faq" } },
-        { bounds: { x: 1666, y: 0, width: 834, height: 843 }, action: { type: "postback", data: "action=prices" } },
-        { bounds: { x: 0, y: 843, width: 833, height: 843 }, action: { type: "postback", data: "action=promo" } },
-        { bounds: { x: 833, y: 843, width: 833, height: 843 }, action: { type: "postback", data: "action=location" } },
-        { bounds: { x: 1666, y: 843, width: 834, height: 843 }, action: { type: "postback", data: "action=staff" } },
-      ],
-    };
-
-    const richMenuId = await client.createRichMenu(richMenu);
-    if (!richMenuId) throw new Error("createRichMenu did not return richMenuId");
-
-    const imgPath = path.join(__dirname, "richmenu.png");
-    if (!fs.existsSync(imgPath)) throw new Error("richmenu.png not found next to index.js");
-
-    const img = fs.createReadStream(imgPath);
-
-    // ✅ These exist on classic Client
-    await client.setRichMenuImage(richMenuId, img, "image/png");
-    await client.setDefaultRichMenu(richMenuId);
-
-    res.send(
-      `✅ Rich menu created + default set.\nID: ${richMenuId}\n\nNow set Render env var:\nDEFAULT_RICHMENU_ID=${richMenuId}\n\nThen redeploy.`
-    );
-  } catch (err) {
-    console.error(err);
-    res.status(500).send("❌ Error: " + (err?.message || String(err)));
-  }
-});
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`LINE bot running on port ${port}`));
