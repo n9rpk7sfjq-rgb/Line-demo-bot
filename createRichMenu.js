@@ -36,7 +36,7 @@ async function lineFetch(url, { method = "GET", headers = {}, body } = {}) {
 async function main() {
   // 1) Create rich menu
   const richMenu = {
-    size: { width: 2500, height: 1686 },
+    size: { width: 1200, height: 810 },
     selected: true,
     name: "Beauty Clinic Menu",
     chatBarText: "Menu",
