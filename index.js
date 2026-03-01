@@ -62,7 +62,7 @@ function getSession(userId) {
     step: STEPS.IDLE,
     data: {
       service: null,
-      serviceChosen: null, // bulletproof service storage
+      serviceChosen: null,
       area: null,
       budget: null,
       day: null,
@@ -167,11 +167,11 @@ function validatePhone(text) {
   return digits;
 }
 
-// ✅ NEW: parse "name + phone" even without comma
+// ✅ parse "name + phone" even without comma
 function parseNameAndPhone(raw) {
   const text = normalize(raw);
 
-  // Find a phone-like chunk anywhere (supports +, spaces, -, (), dots)
+  // Find a phone-like chunk anywhere
   const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
   if (!match) return null;
 
@@ -439,7 +439,7 @@ async function handleEvent(event) {
       session.data.budget = "-";
       session.data.day = "-";
       session.data.time = "-";
-      return replyOne(event, makeText("Please send: Name + Phone (example: N 0812345678)"));
+      return replyOne(event, makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678"));
     }
   }
 
@@ -500,12 +500,36 @@ async function handleEvent(event) {
     session.step = STEPS.BOOK_CONTACT;
     return replyOne(
       event,
-      makeText("Please send your name + phone.\nExamples:\n• N 0812345678\n• N, 0812345678\n• N: 0812345678")
-    );
+makeText("Please send your name + phone. Example: N 0812345678")    );
   }
 
-  // ✅ UPDATED: no comma required
+  // ✅ FIXED: single BOOK_CONTACT handler (no duplicate logic)
   if (session.step === STEPS.BOOK_CONTACT) {
+    // If we already have phone but missing name: treat this message as name-only
+    if (session.data.phone && !session.data.name) {
+      const nameOnly = normalize(textRaw);
+      // reject if it's still a phone-like message
+      if (nameOnly && !/(\+?\d[\d\s().-]{6,}\d)/.test(nameOnly)) {
+        session.data.name = nameOnly;
+        session.step = STEPS.BOOK_CONFIRM;
+
+        const summary =
+          `Please confirm:\n\n` +
+          `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
+          `• Area: ${session.data.area || "-"}\n` +
+          `• Budget: ${session.data.budget || "-"}\n` +
+          `• Day: ${session.data.day || "-"}\n` +
+          `• Time: ${session.data.time || "-"}\n` +
+          `• Name: ${session.data.name || "-"}\n` +
+          `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
+
+        return replyOne(event, makeText(summary), qrConfirm());
+      }
+
+      return replyOne(event, makeText("Now send your name only (example: N)"));
+    }
+
+    // Normal case: parse name+phone in one message
     const parsed = parseNameAndPhone(textRaw);
 
     if (!parsed) {
@@ -515,9 +539,10 @@ async function handleEvent(event) {
       );
     }
 
-    // If user only sent phone, ask for name
+    // Phone-only -> ask for name next
     if (!parsed.name) {
       session.data.phone = parsed.phone;
+      session.data.name = null;
       return replyOne(event, makeText("Got your phone ✅ Now send your name only (example: N)"));
     }
 
@@ -537,27 +562,6 @@ async function handleEvent(event) {
       `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
 
     return replyOne(event, makeText(summary), qrConfirm());
-  }
-
-  // If user previously sent phone-only, accept name-only next
-  if (session.step === STEPS.BOOK_CONTACT && session.data.phone && !session.data.name) {
-    const nameOnly = normalize(textRaw);
-    if (nameOnly && !/^\+?\d/.test(nameOnly)) {
-      session.data.name = nameOnly;
-      session.step = STEPS.BOOK_CONFIRM;
-
-      const summary =
-        `Please confirm:\n\n` +
-        `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
-        `• Area: ${session.data.area || "-"}\n` +
-        `• Budget: ${session.data.budget || "-"}\n` +
-        `• Day: ${session.data.day || "-"}\n` +
-        `• Time: ${session.data.time || "-"}\n` +
-        `• Name: ${session.data.name || "-"}\n` +
-        `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
-
-      return replyOne(event, makeText(summary), qrConfirm());
-    }
   }
 
   if (session.step === STEPS.BOOK_CONFIRM) {
