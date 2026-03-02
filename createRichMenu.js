@@ -3,54 +3,67 @@ import { messagingApi } from "@line/bot-sdk";
 import fs from "fs";
 
 const channelAccessToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-const imagePath = process.env.RICHMENU_IMAGE_PATH || "./richmenu.png";
 
 if (!channelAccessToken) {
   console.error("Missing LINE_CHANNEL_ACCESS_TOKEN");
   process.exit(1);
 }
 
-const client = new messagingApi.MessagingApiClient({
-  channelAccessToken,
-});
+const client = new messagingApi.MessagingApiClient({ channelAccessToken });
 
 async function main() {
   try {
-    // 1️⃣ Create Rich Menu
-    const richMenu = await client.createRichMenu({
+    // 1) Create rich menu (6 tiles)
+    const richMenuId = await client.createRichMenu({
       size: { width: 1200, height: 810 },
       selected: true,
-      name: "Demo Main Menu",
+      name: "Demo Menu (Postback)",
       chatBarText: "Menu",
       areas: [
-        { bounds: { x: 0, y: 0, width: 400, height: 405 }, action: { type: "postback", data: "action=book" } },
-        { bounds: { x: 400, y: 0, width: 400, height: 405 }, action: { type: "postback", data: "action=faq" } },
-        { bounds: { x: 800, y: 0, width: 400, height: 405 }, action: { type: "postback", data: "action=prices" } },
-        { bounds: { x: 0, y: 405, width: 400, height: 405 }, action: { type: "postback", data: "action=promo" } },
-        { bounds: { x: 400, y: 405, width: 400, height: 405 }, action: { type: "postback", data: "action=location" } },
-        { bounds: { x: 800, y: 405, width: 400, height: 405 }, action: { type: "postback", data: "action=staff" } },
+        // Row 1
+        {
+          bounds: { x: 0, y: 0, width: 400, height: 405 },
+          action: { type: "postback", data: "action=book", displayText: "Book appointment" },
+        },
+        {
+          bounds: { x: 400, y: 0, width: 400, height: 405 },
+          action: { type: "postback", data: "action=faq", displayText: "Quick questions" },
+        },
+        {
+          bounds: { x: 800, y: 0, width: 400, height: 405 },
+          action: { type: "postback", data: "action=prices", displayText: "Prices" },
+        },
+        // Row 2
+        {
+          bounds: { x: 0, y: 405, width: 400, height: 405 },
+          action: { type: "postback", data: "action=promo", displayText: "Promotions" },
+        },
+        {
+          bounds: { x: 400, y: 405, width: 400, height: 405 },
+          action: { type: "postback", data: "action=location", displayText: "Location / Branches" },
+        },
+        {
+          bounds: { x: 800, y: 405, width: 400, height: 405 },
+          action: { type: "postback", data: "action=staff", displayText: "Talk to staff" },
+        },
       ],
     });
 
-    const richMenuId = richMenu.richMenuId;
-    console.log("Rich menu created:", richMenuId);
+    console.log("Rich Menu created:", richMenuId);
 
-    // 2️⃣ Upload image
-    const imageBuffer = fs.readFileSync(imagePath);
+    // 2) Upload image
+    const imageBuffer = fs.readFileSync("./richmenu.png");
     await client.setRichMenuImage(richMenuId, imageBuffer, "image/png");
-    console.log("Image uploaded");
+    console.log("Image uploaded.");
 
-    // 3️⃣ Set as DEFAULT (no per-user linking)
+    // 3) Set default rich menu
     await client.setDefaultRichMenu(richMenuId);
-    console.log("Default rich menu set");
+    console.log("Set as default rich menu.");
 
-    console.log("\nIMPORTANT:");
-    console.log("Put this in Render ENV:");
-    console.log("DEFAULT_RICHMENU_ID=" + richMenuId);
-
+    console.log("\nNEW DEFAULT_RICHMENU_ID =", richMenuId);
+    console.log("Paste that into Render env DEFAULT_RICHMENU_ID");
   } catch (err) {
-    console.error("Rich menu setup failed:", err?.message || err);
-    process.exit(1);
+    console.error("Error:", err?.message || err);
   }
 }
 
