@@ -7,54 +7,347 @@ const config = {
   channelSecret: process.env.LINE_CHANNEL_SECRET,
 };
 
+if (!config.channelAccessToken || !config.channelSecret) {
+  console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
+}
+
 const client = new Client(config);
 const app = express();
 
-/* =========================
-   Simple session store
-========================= */
+app.get("/", (_, res) => res.status(200).send("OK"));
+app.get("/webhook", (_, res) => res.status(200).send("OK")); // helpful for browser test
 
+// --------------------
+// Session store (in-memory)
+// --------------------
 const sessions = new Map();
 
+const STEPS = {
+  IDLE: "idle",
+  BOOK_SERVICE: "book_service",
+  BOOK_AREA: "book_area",
+  BOOK_BUDGET: "book_budget",
+  BOOK_DAY: "book_day",
+  BOOK_TIME: "book_time",
+  BOOK_CONTACT: "book_contact",
+  BOOK_CONFIRM: "book_confirm",
+  FAQ_MENU: "faq_menu",
+  WAIT_LOCATION_TEXT: "wait_location_text",
+};
+
+function getUserId(event) {
+  return event.source?.userId || null;
+}
+
 function getSession(userId) {
-  if (!sessions.has(userId)) {
-    sessions.set(userId, {
-      step: "idle",
-      data: {}
-    });
-  }
-  return sessions.get(userId);
+  const s = sessions.get(userId);
+  if (s) return s;
+
+  const fresh = {
+    step: STEPS.IDLE,
+    data: {
+      service: null,
+      serviceChosen: null,
+      area: null,
+      budget: null,
+      day: null,
+      time: null,
+      name: null,
+      phone: null,
+      welcomed: false,
+      richMenuEnsured: false,
+    },
+    updatedAt: Date.now(),
+  };
+  sessions.set(userId, fresh);
+  return fresh;
 }
 
-/* =========================
-   Helpers
-========================= */
-
-function reply(event, messages) {
-  return client.replyMessage(event.replyToken, messages);
+function resetSession(userId) {
+  sessions.set(userId, {
+    step: STEPS.IDLE,
+    data: {
+      service: null,
+      serviceChosen: null,
+      area: null,
+      budget: null,
+      day: null,
+      time: null,
+      name: null,
+      phone: null,
+      welcomed: false,
+      richMenuEnsured: false,
+    },
+    updatedAt: Date.now(),
+  });
 }
 
-function textMessage(text) {
+function touch(session) {
+  session.updatedAt = Date.now();
+}
+
+function normalize(s) {
+  return (s || "").trim();
+}
+
+function makeText(text) {
   return { type: "text", text };
 }
 
-function getEventInput(event) {
+function makeQuickReply(items) {
+  return {
+    items: items.map((i) => ({
+      type: "action",
+      action: { type: "message", label: i.label, text: i.text },
+    })),
+  };
+}
+
+async function reply(event, messages) {
+  return client.replyMessage(event.replyToken, messages);
+}
+
+async function replyOne(event, message, quickReply = null) {
+  const m = quickReply ? { ...message, quickReply } : message;
+  return reply(event, [m]);
+}
+
+// --------------------
+// Ensure rich menu for user (solves “menu appears only later”)
+// --------------------
+async function ensureRichMenuLinked(userId) {
+  const richMenuId = (process.env.DEFAULT_RICHMENU_ID || "").trim();
+  if (!richMenuId) return;
+
+  try {
+    // If already linked, this won’t hurt; if missing, it fixes it.
+    await client.linkRichMenuToUser(userId, richMenuId);
+  } catch (e) {
+    console.error("ensureRichMenuLinked failed:", e?.message || e);
+  }
+}
+
+// --------------------
+// Input extraction
+// --------------------
+function getEventText(event) {
+  if (event.type === "message" && event.message?.type === "text") {
+    return normalize(event.message.text);
+  }
   if (event.type === "postback") {
-    return event.postback.data;
+    return normalize(event.postback?.data || "");
   }
-  if (event.type === "message" && event.message.type === "text") {
-    return event.message.text.trim();
-  }
+  return "";
+}
+
+function parseAction(raw) {
+  const s = (raw || "").trim();
+  if (s.startsWith("action=")) return s.slice("action=".length).toLowerCase();
+
+  const t = s.toLowerCase();
+  if (t === "book appointment" || t === "book an appointment" || t === "book") return "book";
+  if (t === "quick questions" || t === "faq") return "faq";
+  if (t === "prices" || t === "typical prices") return "prices";
+  if (t === "promotions" || t === "promo") return "promo";
+  if (t === "location / branches" || t === "location" || t === "branches") return "location";
+  if (t === "talk to staff" || t === "staff") return "staff";
   return null;
 }
 
-/* =========================
-   Webhook
-========================= */
+function isReset(text) {
+  return /^reset$|^start over$|^restart$/i.test(text || "");
+}
 
+function validatePhone(text) {
+  const digits = (text || "").replace(/[^\d+]/g, "");
+  if (digits.length < 8) return null;
+  return digits;
+}
+
+function parseNameAndPhone(raw) {
+  const text = normalize(raw);
+  const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
+  if (!match) return null;
+
+  const phoneCandidate = match[1];
+  const phone = validatePhone(phoneCandidate);
+  if (!phone) return null;
+
+  let name = text.replace(phoneCandidate, " ").trim();
+  name = name.replace(/\s{2,}/g, " ");
+  name = name.replace(/^[,;:\-–—]+/, "").replace(/[,;:\-–—]+$/, "").trim();
+
+  return { name: name || null, phone };
+}
+
+function looksLikePhoneMessage(text) {
+  return /(\+?\d[\d\s().-]{6,}\d)/.test(text || "");
+}
+
+// --------------------
+// Content
+// --------------------
+const WELCOME_1 = "Welcome to Beauty Clinics ✨";
+const WELCOME_2 =
+  "We make booking easy — choose a menu tile below.";
+const WELCOME_3 = "Tip: you can type “reset” anytime to start over.";
+
+const FAQ_ANSWER = {
+  prices:
+    "Typical prices (demo):\n" +
+    "• Botox: 3,500–12,000 THB\n" +
+    "• Filler: 9,900–25,000 THB / cc\n" +
+    "• HIFU: 5,900–29,000 THB\n" +
+    "• Pico laser: 1,500–6,000 THB\n\n" +
+    "Want to book now?",
+  promo:
+    "Promotions change weekly (demo).\n" +
+    "Tell us the treatment + your budget and staff will share what’s available.",
+};
+
+const BRANCHES = {
+  bangkok: [
+    { name: "Sukhumvit", maps: "https://maps.google.com/?q=Sukhumvit+Bangkok" },
+    { name: "Thonglor", maps: "https://maps.google.com/?q=Thonglor+Bangkok" },
+    { name: "Siam", maps: "https://maps.google.com/?q=Siam+Bangkok" },
+  ],
+  phuket: [{ name: "Phuket – Central", maps: "https://maps.google.com/?q=Central+Phuket" }],
+  samui: [{ name: "Samui – Chaweng", maps: "https://maps.google.com/?q=Chaweng+Koh+Samui" }],
+};
+
+// --------------------
+// Quick replies
+// --------------------
+function qrAfterInfo() {
+  return makeQuickReply([
+    { label: "Book appointment", text: "Book appointment" },
+    { label: "Talk to staff", text: "Talk to staff" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrFaqMenu() {
+  return makeQuickReply([
+    { label: "Typical prices", text: "Typical prices" },
+    { label: "Promotions", text: "Promotions" },
+    { label: "Location / Branches", text: "Location / Branches" },
+    { label: "Talk to staff", text: "Talk to staff" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrLocationCities() {
+  return makeQuickReply([
+    { label: "Bangkok", text: "Bangkok" },
+    { label: "Phuket", text: "Phuket" },
+    { label: "Samui", text: "Samui" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrBookingService() {
+  return makeQuickReply([
+    { label: "Botox", text: "Botox" },
+    { label: "Filler", text: "Filler" },
+    { label: "HIFU", text: "HIFU" },
+    { label: "Pico laser", text: "Pico laser" },
+    { label: "Thread lift", text: "Thread lift" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrBookingArea() {
+  return makeQuickReply([
+    { label: "Full face", text: "Full face" },
+    { label: "Under-eye", text: "Under-eye" },
+    { label: "Jawline", text: "Jawline" },
+    { label: "Cheeks", text: "Cheeks" },
+    { label: "Lips", text: "Lips" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrBookingBudget() {
+  return makeQuickReply([
+    { label: "< 5k", text: "< 5k" },
+    { label: "5k–10k", text: "5k–10k" },
+    { label: "10k–20k", text: "10k–20k" },
+    { label: "20k–40k", text: "20k–40k" },
+    { label: "40k+", text: "40k+" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrBookingDay() {
+  return makeQuickReply([
+    { label: "Today", text: "Today" },
+    { label: "Tomorrow", text: "Tomorrow" },
+    { label: "This weekend", text: "This weekend" },
+    { label: "Next week", text: "Next week" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrBookingTime() {
+  return makeQuickReply([
+    { label: "Morning", text: "Morning" },
+    { label: "Afternoon", text: "Afternoon" },
+    { label: "Evening", text: "Evening" },
+    { label: "Other", text: "Other" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+function qrConfirm() {
+  return makeQuickReply([
+    { label: "YES", text: "YES" },
+    { label: "EDIT", text: "EDIT" },
+    { label: "Back to menu", text: "Back to menu" },
+  ]);
+}
+
+// --------------------
+// Lead sender (Google Sheets)
+// --------------------
+async function getFetch() {
+  if (typeof fetch === "function") return fetch;
+  const mod = await import("node-fetch");
+  return mod.default;
+}
+
+async function sendLeadToSheet(lead) {
+  const url = (process.env.LEADS_API_URL || "").trim();
+  if (!url) {
+    console.error("LEADS_API_URL missing");
+    return false;
+  }
+
+  try {
+    const _fetch = await getFetch();
+    const r = await _fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(lead),
+    });
+    return r.ok;
+  } catch (e) {
+    console.error("Failed to send lead", e);
+    return false;
+  }
+}
+
+// --------------------
+// Webhook
+// --------------------
 app.post("/webhook", middleware(config), async (req, res) => {
   try {
-    await Promise.all(req.body.events.map(handleEvent));
+    const events = req.body.events || [];
+    await Promise.all(events.map(handleEvent));
     res.status(200).end();
   } catch (err) {
     console.error(err);
@@ -62,99 +355,250 @@ app.post("/webhook", middleware(config), async (req, res) => {
   }
 });
 
-/* =========================
-   Core Logic
-========================= */
-
+// --------------------
+// Core handler
+// --------------------
 async function handleEvent(event) {
-  const userId = event.source?.userId;
+  const userId = getUserId(event);
   if (!userId) return;
 
   const session = getSession(userId);
-  const input = getEventInput(event);
-  if (!input) return;
+  touch(session);
 
-  /* =========================
-     Rich Menu Routing
-  ========================= */
+  // Always ensure menu (cheap + fixes “missing until reopen”)
+  if (!session.data.richMenuEnsured) {
+    await ensureRichMenuLinked(userId);
+    session.data.richMenuEnsured = true;
+  }
 
-  if (input.startsWith("action=")) {
-    const action = input.replace("action=", "");
+  // Bootstrap welcome for users who won’t trigger "follow"
+  if (!session.data.welcomed && (event.type === "message" || event.type === "postback")) {
+    session.data.welcomed = true;
+    // Don't block the user flow; just send welcome once.
+    // (If you prefer, only send welcome on first message, not postback.)
+    try {
+      await client.pushMessage(userId, [makeText(WELCOME_1), makeText(WELCOME_2), makeText(WELCOME_3)]);
+    } catch (e) {
+      console.error("push welcome failed:", e?.message || e);
+    }
+  }
 
+  if (event.type === "follow" || event.type === "join") {
+    resetSession(userId);
+    const s = getSession(userId);
+    s.data.welcomed = true;
+    s.data.richMenuEnsured = false;
+    await ensureRichMenuLinked(userId);
+    return reply(event, [makeText(WELCOME_1), makeText(WELCOME_2), makeText(WELCOME_3)]);
+  }
+
+  const textRaw = getEventText(event);
+  if (!textRaw) return;
+
+  if (isReset(textRaw)) {
+    resetSession(userId);
+    const s = getSession(userId);
+    s.data.welcomed = true;
+    await ensureRichMenuLinked(userId);
+    return replyOne(event, makeText("Reset ✅ Use the menu tiles below."));
+  }
+
+  if (/^back to menu$/i.test(textRaw)) {
+    session.step = STEPS.IDLE;
+    return replyOne(event, makeText("OK ✅ Use the menu tiles below."));
+  }
+
+  const action = parseAction(textRaw);
+  if (action) {
     if (action === "book") {
-      session.step = "ask_service";
-      return reply(event, [textMessage("💉 What service do you want?")]);
+      session.step = STEPS.BOOK_SERVICE;
+      return replyOne(event, makeText("Booking — step 1/5\nWhat service do you want?"), qrBookingService());
     }
-
     if (action === "faq") {
-      return reply(event, [textMessage("ℹ️ Ask me anything about treatments or pricing.")]);
+      session.step = STEPS.FAQ_MENU;
+      return replyOne(event, makeText("Quick questions — choose one:"), qrFaqMenu());
     }
-
     if (action === "prices") {
-      return reply(event, [textMessage("💰 Botox: 3,500–12,000 THB\nFiller: 9,900–25,000 THB / cc")]);
+      session.step = STEPS.IDLE;
+      return replyOne(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
     }
-
     if (action === "promo") {
-      return reply(event, [textMessage("🔥 Promotions change weekly. Ask staff for latest offers.")]);
+      session.step = STEPS.IDLE;
+      return replyOne(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
     }
-
     if (action === "location") {
-      return reply(event, [textMessage("📍 We have branches in Sukhumvit, Thonglor, and Siam.")]);
+      session.step = STEPS.IDLE;
+      return replyOne(event, makeText("Locations — choose a city:"), qrLocationCities());
     }
-
     if (action === "staff") {
-      session.step = "ask_contact";
-      return reply(event, [textMessage("👤 Please send your name + phone number.")]);
+      session.step = STEPS.BOOK_CONTACT;
+      session.data.service = "Talk to staff";
+      session.data.serviceChosen = "Talk to staff";
+      session.data.area = "-";
+      session.data.budget = "-";
+      session.data.day = "-";
+      session.data.time = "-";
+      session.data.name = null;
+      session.data.phone = null;
+      return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
     }
   }
 
-  /* =========================
-     Booking Flow
-  ========================= */
+  // Location city handling
+  if (/^bangkok$|^phuket$|^samui$|^other$/i.test(textRaw)) {
+    const t = textRaw.toLowerCase();
 
-  if (session.step === "ask_service") {
-    session.data.service = input;
-    session.step = "ask_day";
-    return reply(event, [textMessage("🗓 Which day?")]);
+    if (t === "other") {
+      session.step = STEPS.WAIT_LOCATION_TEXT;
+      return replyOne(event, makeText("Which city/area are you looking for? (Type it)"));
+    }
+
+    const list = BRANCHES[t] || [];
+    const lines = list.map((b, i) => `${i + 1}) ${b.name}\n${b.maps}`).join("\n\n");
+
+    session.step = STEPS.IDLE;
+    return replyOne(
+      event,
+      makeText(`Branches in ${textRaw} (demo):\n\n${lines}\n\nWant to book or talk to staff?`),
+      qrAfterInfo()
+    );
   }
 
-  if (session.step === "ask_day") {
-    session.data.day = input;
-    session.step = "ask_time";
-    return reply(event, [textMessage("⏰ What time?")]);
+  if (session.step === STEPS.WAIT_LOCATION_TEXT) {
+    const city = normalize(textRaw);
+    session.step = STEPS.IDLE;
+    return replyOne(event, makeText(`Got it — ${city}.\nStaff will confirm the closest branch.`), qrAfterInfo());
   }
 
-  if (session.step === "ask_time") {
-    session.data.time = input;
-    session.step = "ask_contact";
-    return reply(event, [textMessage("👤 Send your name + phone number")]);
+  // Booking flow
+  if (session.step === STEPS.BOOK_SERVICE) {
+    session.data.service = textRaw;
+    session.data.serviceChosen = textRaw;
+    session.step = STEPS.BOOK_AREA;
+    return replyOne(event, makeText("Booking — step 2/5\nWhich area?"), qrBookingArea());
   }
 
-  if (session.step === "ask_contact") {
-    session.data.contact = input;
-    session.step = "idle";
+  if (session.step === STEPS.BOOK_AREA) {
+    session.data.area = textRaw;
+    session.step = STEPS.BOOK_BUDGET;
+    return replyOne(event, makeText("Booking — step 3/5\nWhat is your budget?"), qrBookingBudget());
+  }
+
+  if (session.step === STEPS.BOOK_BUDGET) {
+    session.data.budget = textRaw;
+    session.step = STEPS.BOOK_DAY;
+    return replyOne(event, makeText("Booking — step 4/5\nWhich day?"), qrBookingDay());
+  }
+
+  if (session.step === STEPS.BOOK_DAY) {
+    session.data.day = textRaw;
+    session.step = STEPS.BOOK_TIME;
+    return replyOne(event, makeText("Booking — step 5/5\nWhich time?"), qrBookingTime());
+  }
+
+  if (session.step === STEPS.BOOK_TIME) {
+    session.data.time = textRaw;
+    session.step = STEPS.BOOK_CONTACT;
+    session.data.name = null;
+    session.data.phone = null;
+    return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
+  }
+
+  if (session.step === STEPS.BOOK_CONTACT) {
+    if (session.data.phone && !session.data.name) {
+      const nameOnly = normalize(textRaw);
+      if (!nameOnly || looksLikePhoneMessage(nameOnly)) {
+        return replyOne(event, makeText("Now send your name only (example: N)"));
+      }
+
+      session.data.name = nameOnly;
+      session.step = STEPS.BOOK_CONFIRM;
+
+      const summary =
+        `Please confirm:\n\n` +
+        `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
+        `• Area: ${session.data.area || "-"}\n` +
+        `• Budget: ${session.data.budget || "-"}\n` +
+        `• Day: ${session.data.day || "-"}\n` +
+        `• Time: ${session.data.time || "-"}\n` +
+        `• Name: ${session.data.name || "-"}\n` +
+        `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
+
+      return replyOne(event, makeText(summary), qrConfirm());
+    }
+
+    const parsed = parseNameAndPhone(textRaw);
+    if (!parsed) {
+      return replyOne(event, makeText("Please send your name + phone. Example: N 0812345678"));
+    }
+
+    if (!parsed.name) {
+      session.data.phone = parsed.phone;
+      session.data.name = null;
+      return replyOne(event, makeText("Got your phone ✅ Now send your name only (example: N)"));
+    }
+
+    session.data.name = parsed.name;
+    session.data.phone = parsed.phone;
+    session.step = STEPS.BOOK_CONFIRM;
 
     const summary =
-`My booking ✨
+      `Please confirm:\n\n` +
+      `• Service: ${session.data.serviceChosen || session.data.service || "-"}\n` +
+      `• Area: ${session.data.area || "-"}\n` +
+      `• Budget: ${session.data.budget || "-"}\n` +
+      `• Day: ${session.data.day || "-"}\n` +
+      `• Time: ${session.data.time || "-"}\n` +
+      `• Name: ${session.data.name || "-"}\n` +
+      `• Phone: ${session.data.phone || "-"}\n\nYES / EDIT`;
 
-🗓 ${session.data.day}, ${session.data.time}
-💉 ${session.data.service}
-
-👤 ${session.data.contact}
-
-✅ Staff will contact you shortly.`;
-
-    return reply(event, [textMessage(summary)]);
+    return replyOne(event, makeText(summary), qrConfirm());
   }
 
-  return reply(event, [textMessage("Tap the Menu below to start.")]);
+  if (session.step === STEPS.BOOK_CONFIRM) {
+    if (/^yes$/i.test(textRaw)) {
+      const lead = {
+        ts_iso: new Date().toISOString(),
+        userId,
+        service: String(session.data.serviceChosen || session.data.service || "-").trim() || "-",
+        area: session.data.area || "-",
+        budget: session.data.budget || "-",
+        day: session.data.day || "-",
+        time: session.data.time || "-",
+        name: session.data.name || "-",
+        phone: session.data.phone || "-",
+        source: "line",
+      };
+
+      const ok = await sendLeadToSheet(lead);
+
+      session.step = STEPS.IDLE;
+      return replyOne(
+        event,
+        makeText(ok ? "Booked ✅ Staff will contact you shortly." : "Booked ✅ (but sheet write FAILED — check logs)"),
+        qrAfterInfo()
+      );
+    }
+
+    if (/^edit$/i.test(textRaw)) {
+      session.data.service = null;
+      session.data.serviceChosen = null;
+      session.data.area = null;
+      session.data.budget = null;
+      session.data.day = null;
+      session.data.time = null;
+      session.data.name = null;
+      session.data.phone = null;
+
+      session.step = STEPS.BOOK_SERVICE;
+      return replyOne(event, makeText("Booking — step 1/5\nWhat service do you want?"), qrBookingService());
+    }
+
+    return replyOne(event, makeText("Please choose YES or EDIT."), qrConfirm());
+  }
+
+  return replyOne(event, makeText("Use the menu tiles below to continue."));
 }
 
-/* =========================
-   Start Server
-========================= */
-
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
-  console.log("Bot running on port", port);
-});
+app.listen(port, () => console.log(`LINE bot running on port ${port}`));
