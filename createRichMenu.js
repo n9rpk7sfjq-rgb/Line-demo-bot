@@ -12,7 +12,7 @@ if (!channelAccessToken) {
 // v9: use MessagingApiClient for create/set default
 const client = new messagingApi.MessagingApiClient({ channelAccessToken });
 
-// v9: image upload is on the *Blob* client (this is the key fix)
+// v9: image upload is on the *Blob* client
 const blobClient = new messagingApi.MessagingApiBlobClient({ channelAccessToken });
 
 async function main() {
@@ -57,17 +57,29 @@ async function main() {
     };
 
     console.log("About to create rich menu...");
-    const richMenuId = await client.createRichMenu(richMenu);
+
+    // IMPORTANT: createRichMenu returns { richMenuId: "richmenu-..." }
+    const created = await client.createRichMenu(richMenu);
+    const richMenuId = created?.richMenuId;
+
+    if (!richMenuId) {
+      throw new Error(`createRichMenu returned no richMenuId. Got: ${JSON.stringify(created)}`);
+    }
+
     console.log("Rich Menu created:", richMenuId);
 
     // Upload image (must be ./richmenu.png, 2500x1686, PNG)
-    const imageBuffer = fs.readFileSync("./richmenu.png");
+    const imagePath = "./richmenu.png";
+    if (!fs.existsSync(imagePath)) {
+      throw new Error(`Missing ${imagePath} in current directory.`);
+    }
+    const imageBuffer = fs.readFileSync(imagePath);
 
-    // v9 blob upload
+    // v9 blob upload (needs string richMenuId)
     await blobClient.setRichMenuImage(richMenuId, imageBuffer, "image/png");
     console.log("Image uploaded.");
 
-    // Set default rich menu
+    // Set default rich menu (needs string richMenuId)
     await client.setDefaultRichMenu(richMenuId);
     console.log("Set as default rich menu.");
 
