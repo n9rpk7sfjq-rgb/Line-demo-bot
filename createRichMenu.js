@@ -47,7 +47,7 @@ async function main() {
 
     // 2) Upload image (must be ./richmenu.png and 2500x1686)
     const imageBuffer = fs.readFileSync("./richmenu.png");
-    await client.setRichMenuImage(richMenuId, imageBuffer, "image/png");
+    await client.setRichMenuImageBinary(richMenuId, imageBuffer, "image/png");
     console.log("Image uploaded.");
 
     // 3) Set as default rich menu
@@ -60,5 +60,3 @@ async function main() {
     console.error("Error:", err?.message || err);
   }
 }
-
-main();
