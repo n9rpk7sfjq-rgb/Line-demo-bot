@@ -12,20 +12,25 @@ const config = {
 
 if (!config.channelAccessToken || !config.channelSecret) {
   console.error("Missing LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET");
+  // Don’t hard-exit in Render; logs help you see it.
 }
 
 const CLINIC_NAME = (process.env.CLINIC_NAME || "Lumière Aesthetic Clinic").trim();
 const DEFAULT_RICHMENU_ID = (process.env.DEFAULT_RICHMENU_ID || "").trim();
 
+// Optional demo-friendly contact info
+const CLINIC_PHONE = (process.env.CLINIC_PHONE || "").trim(); // e.g. +66812345678
+const CLINIC_WHATSAPP = (process.env.CLINIC_WHATSAPP || "").trim(); // e.g. https://wa.me/66812345678
+const CLINIC_WEBSITE = (process.env.CLINIC_WEBSITE || "").trim(); // e.g. https://yourclinic.com
+
 const client = new Client(config);
 const app = express();
 
 // --------------------
-// Demo Config (Option B)
+// Demo choices (edit anytime)
 // --------------------
 const DEMO = {
-  branches: ["Sukhumvit", "Thonglor", "Siam"],
-  services: ["Botox", "Filler", "HIFU", "Pico laser", "Thread lift", "Other"],
+  services: ["Botox", "Filler", "HIFU", "Pico laser", "Thread lift", "IV Drip", "Other"],
   days: ["Today", "Tomorrow", "This weekend", "Next week", "Other"],
   times: ["Morning", "Afternoon", "Evening", "Other"],
 };
@@ -42,13 +47,12 @@ const sessions = new Map();
 
 const STEPS = {
   IDLE: "idle",
-  BOOK_SERVICE: "book_service",
-  BOOK_BRANCH: "book_branch",
+  BOOK_TREATMENT: "book_treatment",
   BOOK_DAY: "book_day",
   BOOK_TIME: "book_time",
-  BOOK_CONTACT: "book_contact",
+  BOOK_NAME: "book_name",
+  BOOK_PHONE: "book_phone",
   BOOK_REVIEW: "book_review",
-  FAQ_MENU: "faq_menu",
 };
 
 function normalize(s) {
@@ -65,14 +69,7 @@ function getSession(userId) {
 
   const fresh = {
     step: STEPS.IDLE,
-    data: {
-      service: null,
-      branch: null,
-      day: null,
-      time: null,
-      name: null,
-      phone: null,
-    },
+    data: { treatment: null, day: null, time: null, name: null, phone: null },
     updatedAt: Date.now(),
   };
   sessions.set(userId, fresh);
@@ -82,14 +79,7 @@ function getSession(userId) {
 function resetSession(userId) {
   sessions.set(userId, {
     step: STEPS.IDLE,
-    data: {
-      service: null,
-      branch: null,
-      day: null,
-      time: null,
-      name: null,
-      phone: null,
-    },
+    data: { treatment: null, day: null, time: null, name: null, phone: null },
     updatedAt: Date.now(),
   });
 }
@@ -114,6 +104,18 @@ function makeQuickReply(items) {
   };
 }
 
+function qrList(list) {
+  return makeQuickReply(list.map((x) => ({ label: x, text: x })));
+}
+
+function qrConfirm() {
+  return makeQuickReply([
+    { label: "Confirm", text: "CONFIRM" },
+    { label: "Edit", text: "EDIT" },
+    { label: "Reset", text: "RESET" },
+  ]);
+}
+
 async function reply(event, messages) {
   return client.replyMessage(event.replyToken, messages);
 }
@@ -136,18 +138,20 @@ function getEventText(event) {
   return "";
 }
 
+// Parse postback action=...
 function parseAction(raw) {
   const s = (raw || "").trim();
+
+  // postback data: action=book
   if (s.startsWith("action=")) return s.slice("action=".length).toLowerCase();
 
-  // Fallback if some tiles are "message" actions (still handle)
+  // fallback if any action is message-based
   const t = s.toLowerCase();
-  if (t === "book appointment" || t === "book an appointment" || t === "book") return "book";
-  if (t === "quick questions" || t === "faq") return "faq";
-  if (t === "prices" || t === "typical prices") return "prices";
-  if (t === "promotions" || t === "promo") return "promo";
-  if (t === "location / branches" || t === "location" || t === "branches") return "location";
-  if (t === "talk to staff" || t === "staff") return "staff";
+  if (t === "book" || t === "book consultation" || t === "book appointment") return "book";
+  if (t === "treatments" || t === "treatments & services" || t === "services") return "treatments";
+  if (t === "current promotions" || t === "promotions" || t === "promo") return "promotions";
+  if (t === "contact clinic" || t === "contact" || t === "talk to clinic") return "contact";
+
   return null;
 }
 
@@ -161,7 +165,7 @@ function validatePhone(text) {
   return digits;
 }
 
-// Parse "name + phone" with or without comma
+// Optional: allow user to send name + phone in one message
 function parseNameAndPhone(raw) {
   const text = normalize(raw);
   const match = text.match(/(\+?\d[\d\s().-]{6,}\d)/);
@@ -176,60 +180,6 @@ function parseNameAndPhone(raw) {
   name = name.replace(/^[,;:\-–—]+/, "").replace(/[,;:\-–—]+$/, "").trim();
 
   return { name: name || null, phone };
-}
-
-function looksLikePhoneMessage(text) {
-  return /(\+?\d[\d\s().-]{6,}\d)/.test(text || "");
-}
-
-// --------------------
-// Content
-// --------------------
-const FAQ_ANSWER = {
-  prices:
-    "Typical prices (demo):\n" +
-    "• Botox: 3,500–12,000 THB\n" +
-    "• Filler: 9,900–25,000 THB / cc\n" +
-    "• HIFU: 5,900–29,000 THB\n" +
-    "• Pico laser: 1,500–6,000 THB\n\n" +
-    "Want to book? Tap “Book appointment”.",
-  promo:
-    "Promotions change weekly (demo).\n" +
-    "Tell us what treatment you want and we’ll share what’s available.",
-  staff:
-    "Ask me anything about treatments or pricing — or book an appointment.",
-};
-
-// --------------------
-// Quick replies
-// --------------------
-function qrAfterInfo() {
-  return makeQuickReply([
-    { label: "Book appointment", text: "Book appointment" },
-    { label: "Back to menu", text: "Back to menu" },
-  ]);
-}
-
-function qrFaqMenu() {
-  return makeQuickReply([
-    { label: "Prices", text: "Prices" },
-    { label: "Promotions", text: "Promotions" },
-    { label: "Location / Branches", text: "Location / Branches" },
-    { label: "Talk to staff", text: "Talk to staff" },
-    { label: "Back to menu", text: "Back to menu" },
-  ]);
-}
-
-function qrList(labelList) {
-  return makeQuickReply(labelList.map((x) => ({ label: x, text: x })));
-}
-
-function qrConfirm() {
-  return makeQuickReply([
-    { label: "Confirm", text: "CONFIRM" },
-    { label: "Edit", text: "EDIT" },
-    { label: "Back to menu", text: "Back to menu" },
-  ]);
 }
 
 // --------------------
@@ -263,6 +213,30 @@ async function sendLeadToSheet(lead) {
     console.error("Failed to send lead:", e?.message || e);
     return false;
   }
+}
+
+// --------------------
+// Content responses (demo-safe)
+// --------------------
+function contactMessage() {
+  const lines = [];
+  lines.push(`Contact ${CLINIC_NAME}`);
+  if (CLINIC_PHONE) lines.push(`📞 Phone: ${CLINIC_PHONE}`);
+  if (CLINIC_WHATSAPP) lines.push(`💬 WhatsApp: ${CLINIC_WHATSAPP}`);
+  if (CLINIC_WEBSITE) lines.push(`🌐 Website: ${CLINIC_WEBSITE}`);
+  if (!CLINIC_PHONE && !CLINIC_WHATSAPP && !CLINIC_WEBSITE) {
+    lines.push("Reply here and a staff member will get back to you shortly.");
+  }
+  return lines.join("\n");
+}
+
+function promotionsMessage() {
+  return (
+    "Current promotions (demo)\n" +
+    "• Free consultation with selected treatments\n" +
+    "• Limited-time packages may be available\n\n" +
+    "Tell me what treatment you want and I’ll share what’s available."
+  );
 }
 
 // --------------------
@@ -313,167 +287,115 @@ async function handleEvent(event) {
 
   if (isReset(textRaw)) {
     resetSession(userId);
-    return replyOne(event, makeText("Reset ✅ Tap the menu below to start again."));
+    return replyOne(event, makeText("Reset ✅ Tap the menu to start again."));
   }
 
-  if (/^back to menu$/i.test(textRaw)) {
-    session.step = STEPS.IDLE;
-    return replyOne(event, makeText("OK ✅ Tap the menu below."));
-  }
-
-  // Route rich menu actions
+  // --------------------
+  // Rich menu actions (4 tiles)
+  // --------------------
   const action = parseAction(textRaw);
   if (action) {
-    // Never carry booking state across tiles unless you intend it
     if (action === "book") {
-      session.step = STEPS.BOOK_SERVICE;
-      session.data = { service: null, branch: null, day: null, time: null, name: null, phone: null };
+      return startBooking(event, session, userId);
+    }
 
+    if (action === "treatments") {
+      session.step = STEPS.BOOK_TREATMENT;
+      session.data = { treatment: null, day: null, time: null, name: null, phone: null };
       return replyOne(
         event,
-        makeText("Book your visit\nWhat treatment are you interested in today?"),
-        qrList([...DEMO.services, "Back to menu"])
+        makeText("Which treatment are you interested in?"),
+        qrList([...DEMO.services, "RESET"])
       );
     }
 
-    if (action === "faq") {
-      session.step = STEPS.FAQ_MENU;
-      return replyOne(event, makeText("Quick questions — choose one:"), qrFaqMenu());
+    if (action === "promotions") {
+      session.step = STEPS.IDLE;
+      return replyOne(event, makeText(promotionsMessage()), qrList(["Book consultation", "Treatments", "Contact clinic"]));
     }
 
-    if (action === "prices") {
+    if (action === "contact") {
       session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
-    }
-
-    if (action === "promo") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
-    }
-
-    if (action === "location") {
-      session.step = STEPS.IDLE;
-      return replyOne(
-        event,
-        makeText(`Branches (demo):\n• ${DEMO.branches.join("\n• ")}`),
-        qrAfterInfo()
-      );
-    }
-
-    if (action === "staff") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.staff), qrAfterInfo());
+      return replyOne(event, makeText(contactMessage()), qrList(["Book consultation", "Treatments"]));
     }
   }
 
-  // FAQ menu routing via messages
-  if (session.step === STEPS.FAQ_MENU) {
-    const t = textRaw.toLowerCase();
-    if (t === "prices" || t === "typical prices") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.prices), qrAfterInfo());
-    }
-    if (t === "promotions") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.promo), qrAfterInfo());
-    }
-    if (t === "location / branches" || t === "location" || t === "branches") {
-      session.step = STEPS.IDLE;
-      return replyOne(
-        event,
-        makeText(`Branches (demo):\n• ${DEMO.branches.join("\n• ")}`),
-        qrAfterInfo()
-      );
-    }
-    if (t === "talk to staff") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText(FAQ_ANSWER.staff), qrAfterInfo());
-    }
-    if (t === "back to menu") {
-      session.step = STEPS.IDLE;
-      return replyOne(event, makeText("OK ✅ Tap the menu below."));
-    }
-
-    return replyOne(event, makeText("Choose one of the quick questions below."), qrFaqMenu());
+  // Allow simple typed commands too
+  if (/^book consultation$|^book appointment$|^book$/i.test(textRaw)) {
+    return startBooking(event, session, userId);
+  }
+  if (/^treatments$|^services$/i.test(textRaw)) {
+    session.step = STEPS.BOOK_TREATMENT;
+    return replyOne(event, makeText("Which treatment are you interested in?"), qrList([...DEMO.services, "RESET"]));
+  }
+  if (/^promotions$|^current promotions$/i.test(textRaw)) {
+    return replyOne(event, makeText(promotionsMessage()));
+  }
+  if (/^contact clinic$|^contact$/i.test(textRaw)) {
+    return replyOne(event, makeText(contactMessage()));
   }
 
   // --------------------
-  // Booking flow
+  // Booking flow (exact sequence)
+  // treatment -> day -> time -> name -> phone -> confirm
   // --------------------
-  if (session.step === STEPS.BOOK_SERVICE) {
-    session.data.service = textRaw;
-    session.step = STEPS.BOOK_BRANCH;
-
-    return replyOne(
-      event,
-      makeText("Choose your location\nPlease select your preferred branch below."),
-      qrList([...DEMO.branches, "Back to menu"])
-    );
-  }
-
-  if (session.step === STEPS.BOOK_BRANCH) {
-    session.data.branch = textRaw;
+  if (session.step === STEPS.BOOK_TREATMENT) {
+    session.data.treatment = textRaw;
     session.step = STEPS.BOOK_DAY;
-
-    return replyOne(
-      event,
-      makeText("Select a day\nWhen would you like to come in?"),
-      qrList([...DEMO.days, "Back to menu"])
-    );
+    return replyOne(event, makeText("Choose a day:"), qrList([...DEMO.days, "RESET"]));
   }
 
   if (session.step === STEPS.BOOK_DAY) {
     session.data.day = textRaw;
     session.step = STEPS.BOOK_TIME;
-
-    return replyOne(
-      event,
-      makeText("Preferred time\nWhat time of day works best?"),
-      qrList([...DEMO.times, "Back to menu"])
-    );
+    return replyOne(event, makeText("Choose a time:"), qrList([...DEMO.times, "RESET"]));
   }
 
   if (session.step === STEPS.BOOK_TIME) {
     session.data.time = textRaw;
-    session.step = STEPS.BOOK_CONTACT;
-
-    return replyOne(
-      event,
-      makeText(
-        "Your contact details\nPlease send your name + phone number.\nExample: Nathalie 0812345678"
-      )
-    );
+    session.step = STEPS.BOOK_NAME;
+    return replyOne(event, makeText("What is your full name?"));
   }
 
-  if (session.step === STEPS.BOOK_CONTACT) {
-    // If phone already stored but name missing => accept name-only
-    if (session.data.phone && !session.data.name) {
-      const nameOnly = normalize(textRaw);
-      if (!nameOnly || looksLikePhoneMessage(nameOnly)) {
-        return replyOne(event, makeText("Now send your name only (example: Nathalie)"));
-      }
-      session.data.name = nameOnly;
-      session.step = STEPS.BOOK_REVIEW;
-      return sendReview(event, session, userId);
-    }
-
-    // Normal parse: name + phone
+  if (session.step === STEPS.BOOK_NAME) {
+    // If user sent name+phone together, accept it (faster)
     const parsed = parseNameAndPhone(textRaw);
-    if (!parsed) {
-      return replyOne(event, makeText("Please send: Name + Phone (example: Nathalie 0812345678)"));
-    }
-
-    // Phone-only
-    if (!parsed.name) {
+    if (parsed) {
+      session.data.name = parsed.name || null;
       session.data.phone = parsed.phone;
-      session.data.name = null;
-      return replyOne(event, makeText("Got your phone ✅ Now send your name only (example: Nathalie)"));
+      // If name was missing, ask name; else go review
+      if (!session.data.name) {
+        session.step = STEPS.BOOK_NAME;
+        return replyOne(event, makeText("Got your phone ✅ Now send your full name."));
+      }
+      session.step = STEPS.BOOK_REVIEW;
+      return sendReview(event, session);
     }
 
-    session.data.name = parsed.name;
-    session.data.phone = parsed.phone;
+    const nameOnly = normalize(textRaw);
+    if (!nameOnly) return replyOne(event, makeText("Please type your full name."));
+    session.data.name = nameOnly;
+    session.step = STEPS.BOOK_PHONE;
+    return replyOne(event, makeText("What is your phone number? (example: 0812345678)"));
+  }
+
+  if (session.step === STEPS.BOOK_PHONE) {
+    // Allow name+phone here too (if user repeats)
+    const parsed = parseNameAndPhone(textRaw);
+    if (parsed) {
+      if (!session.data.name && parsed.name) session.data.name = parsed.name;
+      session.data.phone = parsed.phone;
+      session.step = STEPS.BOOK_REVIEW;
+      return sendReview(event, session);
+    }
+
+    const phone = validatePhone(textRaw);
+    if (!phone) {
+      return replyOne(event, makeText("Please enter a valid phone number (example: 0812345678)."));
+    }
+    session.data.phone = phone;
     session.step = STEPS.BOOK_REVIEW;
-    return sendReview(event, session, userId);
+    return sendReview(event, session);
   }
 
   if (session.step === STEPS.BOOK_REVIEW) {
@@ -482,60 +404,69 @@ async function handleEvent(event) {
         ts_iso: new Date().toISOString(),
         userId,
         clinic: CLINIC_NAME,
-        service: session.data.service || "-",
-        branch: session.data.branch || "-",
+        treatment: session.data.treatment || "-",
         day: session.data.day || "-",
         time: session.data.time || "-",
         name: session.data.name || "-",
         phone: session.data.phone || "-",
         source: "line",
-        version: process.env.BOT_VERSION || "demo-v1",
+        version: process.env.BOT_VERSION || "demo-v2",
       };
 
       const ok = await sendLeadToSheet(lead);
 
-      // Two-message confirmation
       const msg1 =
-        `My booking at ${CLINIC_NAME}\n\n` +
-        `🗓 ${session.data.day || "-"}, ${session.data.time || "-"}\n` +
-        `💉 ${session.data.service || "-"}\n` +
-        `📍 ${session.data.branch || "-"}\n\n` +
-        `👤 ${session.data.name || "-"}\n` +
-        `📞 ${session.data.phone || "-"}`;
+        `Appointment request — ${CLINIC_NAME}\n\n` +
+        `💉 Treatment: ${session.data.treatment || "-"}\n` +
+        `🗓 Day: ${session.data.day || "-"}\n` +
+        `⏰ Time: ${session.data.time || "-"}\n` +
+        `👤 Name: ${session.data.name || "-"}\n` +
+        `📞 Phone: ${session.data.phone || "-"}`;
 
       const msg2 = ok
-        ? `✅ Request received\nThe ${session.data.branch || "clinic"} team will contact you shortly to confirm the exact time.`
-        : `✅ Request received\n(But the sheet write failed — check logs / Apps Script permissions.)`;
+        ? `✅ Request received.\nThe clinic will contact you shortly to confirm the exact time.`
+        : `✅ Request received.\n(But Sheets write failed — check Render logs / Apps Script permissions.)`;
 
       resetSession(userId);
       return reply(event, [makeText(msg1), makeText(msg2)]);
     }
 
     if (/^edit$/i.test(textRaw)) {
-      // restart booking cleanly
-      session.step = STEPS.BOOK_SERVICE;
-      session.data = { service: null, branch: null, day: null, time: null, name: null, phone: null };
+      // Restart at treatment step
+      session.step = STEPS.BOOK_TREATMENT;
+      session.data = { treatment: null, day: null, time: null, name: null, phone: null };
+      return replyOne(event, makeText("Sure — let’s start again. Which treatment?"), qrList([...DEMO.services, "RESET"]));
+    }
 
-      return replyOne(
-        event,
-        makeText("No problem — let’s start again.\nWhat treatment are you interested in today?"),
-        qrList([...DEMO.services, "Back to menu"])
-      );
+    if (isReset(textRaw)) {
+      resetSession(userId);
+      return replyOne(event, makeText("Reset ✅ Tap the menu to start again."));
     }
 
     return replyOne(event, makeText("Please tap Confirm or Edit."), qrConfirm());
   }
 
   // Default fallback
-  return replyOne(event, makeText("Tap the menu below to continue."));
+  return replyOne(event, makeText("Tap the menu below to continue. (Book / Treatments / Promotions / Contact)"));
+}
+
+async function startBooking(event, session, userId) {
+  // clean state
+  session.step = STEPS.BOOK_TREATMENT;
+  session.data = { treatment: null, day: null, time: null, name: null, phone: null };
+
+  return replyOne(
+    event,
+    makeText("Let’s book your consultation.\nWhich treatment are you interested in?"),
+    qrList([...DEMO.services, "RESET"])
+  );
 }
 
 async function sendReview(event, session) {
   const summary =
-    `Review your booking\n\n` +
+    `Please review:\n\n` +
     `Clinic: ${CLINIC_NAME}\n` +
-    `Service: ${session.data.service || "-"}\n` +
-    `Branch: ${session.data.branch || "-"}\n` +
+    `Treatment: ${session.data.treatment || "-"}\n` +
     `Day: ${session.data.day || "-"}\n` +
     `Time: ${session.data.time || "-"}\n` +
     `Name: ${session.data.name || "-"}\n` +
