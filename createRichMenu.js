@@ -9,15 +9,36 @@ if (!channelAccessToken) {
 }
 
 const client = new messagingApi.MessagingApiClient({ channelAccessToken });
-const blobClient = new messagingApi.MessagingApiBlobClient({ channelAccessToken });
+
+async function uploadRichMenuImage(richMenuId, imageBuffer) {
+  const url = `https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`;
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${channelAccessToken}`,
+      "Content-Type": "image/jpeg",
+    },
+    body: imageBuffer,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Image upload failed: ${res.status} ${res.statusText} ${text}`.trim());
+  }
+}
 
 async function main() {
   try {
-    console.log("createRichMenu.js started (clean, JPEG, buffer)");
+    console.log("createRichMenu.js started (clean, JPEG)");
 
-    const imagePath = "./richmenu.jpeg"; // must match repo file name
+    const imagePath = "./richmenu.jpeg";
     if (!fs.existsSync(imagePath)) throw new Error(`Missing file: ${imagePath}`);
 
+    const imageBuffer = fs.readFileSync(imagePath);
+    console.log("Image bytes:", imageBuffer.length);
+
+    // 2500 x 1686 (Large), 4 equal tiles (2x2)
     const width = 2500;
     const height = 1686;
     const tileW = 1250;
@@ -37,20 +58,18 @@ async function main() {
     };
 
     console.log("Creating rich menu...");
-    const res = await client.createRichMenu(richMenuObject);
+    const createRes = await client.createRichMenu(richMenuObject);
 
-    // ✅ KEY FIX: extract string ID (SDK returns an object)
-    const richMenuId = res.richMenuId ?? res;
+    // SDK v9 returns { richMenuId: "..." }
+    const richMenuId = createRes.richMenuId ?? createRes;
     if (!richMenuId || typeof richMenuId !== "string") {
-      throw new Error(`Unexpected createRichMenu response: ${JSON.stringify(res)}`);
+      throw new Error(`Unexpected createRichMenu response: ${JSON.stringify(createRes)}`);
     }
 
     console.log("Rich menu created:", richMenuId);
 
-    const imageBuffer = fs.readFileSync(imagePath);
-    console.log("Uploading image bytes:", imageBuffer.length);
-
-    await blobClient.setRichMenuImage(richMenuId, imageBuffer, "image/jpeg");
+    console.log("Uploading image...");
+    await uploadRichMenuImage(richMenuId, imageBuffer);
     console.log("Image uploaded.");
 
     await client.setDefaultRichMenu(richMenuId);
