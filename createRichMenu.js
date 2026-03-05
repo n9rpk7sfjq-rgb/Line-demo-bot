@@ -11,41 +11,15 @@ if (!channelAccessToken) {
 const client = new messagingApi.MessagingApiClient({ channelAccessToken });
 const blobClient = new messagingApi.MessagingApiBlobClient({ channelAccessToken });
 
-async function deleteAllRichMenus() {
-  const list = await client.getRichMenuList();
-  const menus = list?.richmenus || [];
-  console.log(`Deleting ${menus.length} rich menu(s)...`);
-  for (const m of menus) {
-    try {
-      await client.deleteRichMenu(m.richMenuId);
-      console.log("Deleted:", m.richMenuId);
-    } catch (e) {
-      console.log("Delete failed (ignored):", m.richMenuId, e?.message || e);
-    }
-  }
-}
-
 async function main() {
   try {
-    console.log("createRichMenu.js started");
+    console.log("createRichMenu.js started (clean, JPEG, buffer)");
 
-    // Ensure file exists
-    const imagePath = "./richmenu.jpeg"; // <-- MUST match repo filename exactly
-    if (!fs.existsSync(imagePath)) {
-      throw new Error(`Missing file: ${imagePath} (check filename + extension)`);
-    }
+    const imagePath = "./richmenu.jpeg"; // must match repo filename exactly
+    if (!fs.existsSync(imagePath)) throw new Error(`Missing file: ${imagePath}`);
 
-    const imageBuffer = fs.readFileSync(imagePath);
-    console.log(`Image bytes: ${imageBuffer.length}`);
-
-    // Delete old menus (optional but you wanted this behavior)
-    await deleteAllRichMenus();
-
-    // 2500 x 1686 (Large)
     const width = 2500;
     const height = 1686;
-
-    // 4 equal tiles (2x2)
     const tileW = 1250;
     const tileH = 843;
 
@@ -66,10 +40,10 @@ async function main() {
     const richMenuId = await client.createRichMenu(richMenuObject);
     console.log("Rich menu created:", richMenuId);
 
-    // ✅ v9 blob upload — pass a stream + contentType
-    // This avoids the 415 caused by wrong body encoding / headers.
-    const stream = fs.createReadStream(imagePath);
-    await blobClient.setRichMenuImage(richMenuId, stream, "image/jpeg");
+    // KEY FIX: Buffer upload (no stream => no duplex error)
+    const imageBuffer = fs.readFileSync(imagePath);
+    console.log("Uploading image bytes:", imageBuffer.length);
+    await blobClient.setRichMenuImage(richMenuId, imageBuffer, "image/jpeg");
     console.log("Image uploaded.");
 
     await client.setDefaultRichMenu(richMenuId);
