@@ -9,21 +9,56 @@ if (!channelAccessToken) {
   process.exit(1);
 }
 
-// v9: use MessagingApiClient for create/set default
 const client = new messagingApi.MessagingApiClient({ channelAccessToken });
-
-// v9: image upload is on the *Blob* client
 const blobClient = new messagingApi.MessagingApiBlobClient({ channelAccessToken });
+
+// Set to false if you do NOT want to delete all old rich menus
+const DELETE_ALL_OLD_MENUS = true;
+
+function readImage() {
+  const candidates = ["./richmenu.jpg", "./richmenu.jpeg", "./richmenu.png"];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) return { path: p, buf: fs.readFileSync(p) };
+  }
+  throw new Error("Missing image file. Upload richmenu.jpg (recommended) into the repo root.");
+}
+
+function detectMime(path) {
+  if (path.endsWith(".png")) return "image/png";
+  return "image/jpeg"; // .jpg or .jpeg
+}
+
+async function deleteAllRichMenus() {
+  const res = await client.getRichMenuList();
+  const list = res?.richmenus || [];
+  if (!list.length) {
+    console.log("No existing rich menus to delete.");
+    return;
+  }
+
+  console.log(`Deleting ${list.length} rich menus...`);
+  for (const m of list) {
+    try {
+      // also remove default if it is this one
+      await client.deleteRichMenu(m.richMenuId);
+      console.log("Deleted:", m.richMenuId);
+    } catch (e) {
+      console.log("Skip delete (maybe already gone):", m.richMenuId, e?.message || e);
+    }
+  }
+}
 
 async function main() {
   try {
     console.log("createRichMenu.js started");
 
-    // 2500 x 1686 (Large)
+    if (DELETE_ALL_OLD_MENUS) {
+      await deleteAllRichMenus();
+    }
+
+    // 2500 x 1686
     const width = 2500;
     const height = 1686;
-
-    // 4 equal tiles (2x2)
     const tileW = 1250;
     const tileH = 843;
 
@@ -33,58 +68,32 @@ async function main() {
       name: "Demo Menu (4 tiles)",
       chatBarText: "Menu",
       areas: [
-        // Top-left: Book consultation
-        {
-          bounds: { x: 0, y: 0, width: tileW, height: tileH },
-          action: { type: "postback", data: "action=book", displayText: "Book consultation" },
-        },
-        // Top-right: Treatments
-        {
-          bounds: { x: tileW, y: 0, width: tileW, height: tileH },
-          action: { type: "postback", data: "action=treatments", displayText: "Treatments" },
-        },
-        // Bottom-left: Promotions
-        {
-          bounds: { x: 0, y: tileH, width: tileW, height: tileH },
-          action: { type: "postback", data: "action=promotions", displayText: "Current promotions" },
-        },
-        // Bottom-right: Contact clinic
-        {
-          bounds: { x: tileW, y: tileH, width: tileW, height: tileH },
-          action: { type: "postback", data: "action=contact", displayText: "Contact clinic" },
-        },
+        { bounds: { x: 0, y: 0, width: tileW, height: tileH },
+          action: { type: "postback", data: "action=book", displayText: "Book consultation" } },
+        { bounds: { x: tileW, y: 0, width: tileW, height: tileH },
+          action: { type: "postback", data: "action=treatments", displayText: "Treatments" } },
+        { bounds: { x: 0, y: tileH, width: tileW, height: tileH },
+          action: { type: "postback", data: "action=promotions", displayText: "Current promotions" } },
+        { bounds: { x: tileW, y: tileH, width: tileW, height: tileH },
+          action: { type: "postback", data: "action=contact", displayText: "Contact clinic" } },
       ],
     };
 
     console.log("About to create rich menu...");
-
-    // IMPORTANT: createRichMenu returns { richMenuId: "richmenu-..." }
-    const created = await client.createRichMenu(richMenu);
-    const richMenuId = created?.richMenuId;
-
-    if (!richMenuId) {
-      throw new Error(`createRichMenu returned no richMenuId. Got: ${JSON.stringify(created)}`);
-    }
-
+    const richMenuId = await client.createRichMenu(richMenu);
     console.log("Rich Menu created:", richMenuId);
 
-    // Upload image (must be ./richmenu.png, 2500x1686, PNG)
-    const imagePath = "./richmenu.png";
-    if (!fs.existsSync(imagePath)) {
-      throw new Error(`Missing ${imagePath} in current directory.`);
-    }
-    const imageBuffer = fs.readFileSync(imagePath);
+    const { path, buf } = readImage();
+    const mime = detectMime(path);
 
-    // v9 blob upload (needs string richMenuId)
-    await blobClient.setRichMenuImage(richMenuId, imageBuffer, "image/png");
+    console.log(`Uploading image ${path} (${mime}), bytes=${buf.length}`);
+    await blobClient.setRichMenuImage(richMenuId, buf, mime);
     console.log("Image uploaded.");
 
-    // Set default rich menu (needs string richMenuId)
     await client.setDefaultRichMenu(richMenuId);
     console.log("Set as default rich menu.");
 
     console.log("\nNEW DEFAULT_RICHMENU_ID =", richMenuId);
-    console.log("Put that into Render env: DEFAULT_RICHMENU_ID (optional)");
   } catch (err) {
     console.error("Error:", err?.message || err);
     process.exit(1);
