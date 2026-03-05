@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js",
+    "richmenu": "node createRichMenu.js"
+  },
   "dependencies": {
     "@line/bot-sdk": "^9.0.0",
     "dotenv": "^16.4.5",
