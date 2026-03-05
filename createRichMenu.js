@@ -42,27 +42,25 @@ async function uploadRichMenuImage(richMenuId, filePath) {
 
   console.log(`Uploading image ${filePath} (${mime}), bytes=${buf.length}`);
 
-  // IMPORTANT: this is the correct upload endpoint
   const res = await fetch(
-    `https://api-data.line.me/v2/bot/richmenu/${richMenuId}/content`,
+    `https://api.line.me/v2/bot/richmenu/${richMenuId}/content`,
     {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${channelAccessToken}`,
-        "Content-Type": mime,
+        "Authorization": `Bearer ${channelAccessToken}`,
+        "Content-Type": mime
       },
-      body: buf,
+      body: buf
     }
   );
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Image upload failed: ${res.status} ${res.statusText} ${text}`);
+    const text = await res.text();
+    throw new Error(`Image upload failed: ${res.status} ${text}`);
   }
 
   console.log("Image uploaded.");
 }
-
 async function deleteAllRichMenus() {
   const list = await client.getRichMenuList();
   const menus = list?.richmenus || [];
