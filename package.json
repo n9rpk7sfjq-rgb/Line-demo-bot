@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "richmenu": "node createRichMenu.js"
+    "richmenu": "node createRichMenu.js",
+    "dev": "node index.js"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.0.0",
