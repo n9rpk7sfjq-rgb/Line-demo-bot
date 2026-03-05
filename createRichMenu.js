@@ -15,7 +15,7 @@ async function main() {
   try {
     console.log("createRichMenu.js started (clean, JPEG, buffer)");
 
-    const imagePath = "./richmenu.jpeg"; // must match repo filename exactly
+    const imagePath = "./richmenu.jpeg"; // must match repo file name
     if (!fs.existsSync(imagePath)) throw new Error(`Missing file: ${imagePath}`);
 
     const width = 2500;
@@ -37,12 +37,19 @@ async function main() {
     };
 
     console.log("Creating rich menu...");
-    const richMenuId = await client.createRichMenu(richMenuObject);
+    const res = await client.createRichMenu(richMenuObject);
+
+    // ✅ KEY FIX: extract string ID (SDK returns an object)
+    const richMenuId = res.richMenuId ?? res;
+    if (!richMenuId || typeof richMenuId !== "string") {
+      throw new Error(`Unexpected createRichMenu response: ${JSON.stringify(res)}`);
+    }
+
     console.log("Rich menu created:", richMenuId);
 
-    // KEY FIX: Buffer upload (no stream => no duplex error)
     const imageBuffer = fs.readFileSync(imagePath);
     console.log("Uploading image bytes:", imageBuffer.length);
+
     await blobClient.setRichMenuImage(richMenuId, imageBuffer, "image/jpeg");
     console.log("Image uploaded.");
 
